@@ -1,0 +1,14 @@
+numpy
+pandas
+scikit-learn
+xgboost
+optuna
+category-encoders
+matplotlib
+seaborn
+requests
+tqdm
+joblib
+pycountry
+fuzzywuzzy
+python-Levenshtein
