@@ -19,22 +19,24 @@ class EconomicsService:
 
     def get_country_stats(self, raw_country_name: str, year: int = 2018) -> dict:
         clean_name = normalize_country_name(raw_country_name)
+        return self._get_stats_for_year(clean_name, year)
+
+    def _get_stats_for_year(self, clean_name: str, year: int) -> dict:
         if year <= 2018:
-            stats = COUNTRY_STATS_2018.get(clean_name, DEFAULT_STATS_2018).copy()
-        else:
-            stats = COUNTRY_STATS_CURRENT.get(clean_name, DEFAULT_STATS_CURRENT).copy()
-        stats['_resolved_name'] = clean_name
-        return stats
+            return COUNTRY_STATS_2018.get(clean_name, DEFAULT_STATS_2018).copy()
+        return COUNTRY_STATS_CURRENT.get(clean_name, DEFAULT_STATS_CURRENT).copy()
 
     def get_fuel_price(self, year: int, month: int) -> float:
         if year <= 2018:
-            try:
-                return float(REAL_FUEL_PRICES_2018[year][month - 1])
-            except (KeyError, IndexError):
-                logger.warning(f"Немає ціни палива для {year}-{month:02d}, використовую 60.0")
-                return 60.0
-        else:
-            return float(REAL_FUEL_PRICE_CURRENT)
+            return self._fuel_price_for_2018(year, month)
+        return float(REAL_FUEL_PRICE_CURRENT)
+
+    def _fuel_price_for_2018(self, year: int, month: int) -> float:
+        try:
+            return float(REAL_FUEL_PRICES_2018[year][month - 1])
+        except (KeyError, IndexError):
+            logger.warning(f"Немає ціни палива для {year}-{month:02d}, використовую 60.0")
+            return 60.0
 
     def calculate_tariff(self, country_stats: dict, category: str, order_total: float) -> float:
         origin_zone = 'US_TERRITORY'

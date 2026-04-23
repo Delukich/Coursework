@@ -43,6 +43,26 @@ def save_geocode_cache(cache: dict):
 geocode_cache = load_geocode_cache()
 
 
+def _fallback_coords(country: str) -> Tuple[float, float]:
+    return COUNTRY_COORDS_FALLBACK.get(country, (np.nan, np.nan))
+
+
+def _query_nominatim(city: str, country: str) -> Tuple[float, float]:
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {"city": city, "country": country, "format": "json", "limit": 1}
+    headers = {"User-Agent": NOMINATIM_USER_AGENT}
+    try:
+        sleep(1)
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if data:
+            return float(data[0]["lat"]), float(data[0]["lon"])
+    except Exception as exc:
+        logger.error(f"Geocode error for {city}, {country}: {exc}")
+    return _fallback_coords(country)
+
+
 @lru_cache(maxsize=20000)
 def geocode_city(city: str, country: str) -> Tuple[float, float]:
     if not city or not country:
@@ -55,24 +75,9 @@ def geocode_city(city: str, country: str) -> Tuple[float, float]:
         return float(lat), float(lon)
 
     if OFFLINE:
-        lat, lon = COUNTRY_COORDS_FALLBACK.get(normalized_country, (np.nan, np.nan))
+        lat, lon = _fallback_coords(normalized_country)
     else:
-        url = "https://nominatim.openstreetmap.org/search"
-        params = {"city": city, "country": normalized_country, "format": "json", "limit": 1}
-        headers = {"User-Agent": NOMINATIM_USER_AGENT}
-        try:
-            sleep(1)
-            response = requests.get(url, params=params, headers=headers, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            if data:
-                lat = float(data[0]["lat"])
-                lon = float(data[0]["lon"])
-            else:
-                lat, lon = COUNTRY_COORDS_FALLBACK.get(normalized_country, (np.nan, np.nan))
-        except Exception as exc:
-            logger.error(f"Geocode error for {city}, {normalized_country}: {exc}")
-            lat, lon = COUNTRY_COORDS_FALLBACK.get(normalized_country, (np.nan, np.nan))
+        lat, lon = _query_nominatim(city, normalized_country)
 
     geocode_cache[key] = (lat, lon)
     save_geocode_cache(geocode_cache)

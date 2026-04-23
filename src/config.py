@@ -3,7 +3,6 @@ import os
 import pycountry
 from fuzzywuzzy import process
 
-# ДИРЕКТОРІЇ ТА ШЛЯХИ
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 MODELS_DIR = os.path.join(BASE_DIR, 'models')
@@ -22,20 +21,14 @@ FEATURE_META_PATH = os.path.join(MODELS_DIR, 'feature_meta.joblib')
 
 NOMINATIM_USER_AGENT = "LogisticsProfitPredictor/1.0 (coursework project contact)"
 
-# Дефолтні координати складу (Пуерто-Рико)
-WAREHOUSE_COORDS = {'lat': 18.25, 'lon': -66.03}
-
-# Категоріальні колонки для XGBoost
 CATEGORICAL_COLUMNS_USED = [
     'Type', 'Shipping Mode', 'Category Name', 'Order Region',
     'Order City', 'Order Country', 'Market', 'Customer Segment', 'Department Name'
 ]
 
 
-# НОРМАЛІЗАЦІЯ НАЗВ КРАЇН
 
 SPANISH_TO_ENGLISH = {
-    # Основні торгові партнери датасету
     'Francia':                          'France',
     'Alemania':                         'Germany',
     'Reino Unido':                      'UK',
@@ -132,7 +125,6 @@ SPANISH_TO_ENGLISH = {
     'Guinea':                           'Guinea',
 }
 
-# Загальні англійські скорочення
 QUICK_FIX = {
     'usa': 'USA', 'united states': 'USA', 'united states of america': 'USA',
     'u.s.': 'USA', 'u.s.a.': 'USA', 'us': 'USA',
@@ -150,36 +142,9 @@ CANONICAL_NAMES = {
     "Côte d'Ivoire": 'Ivory Coast',
 }
 
-def normalize_country_name(raw_name: str) -> str:
-    if not raw_name or not isinstance(raw_name, str):
-        return 'Unknown'
-
-    # Прямий переклад з іспанської 
-    if raw_name in SPANISH_TO_ENGLISH:
-        return SPANISH_TO_ENGLISH[raw_name]
-
-    name_lower = raw_name.strip().lower()
-
-    # Англійські скорочення
-    if name_lower in QUICK_FIX:
-        return QUICK_FIX[name_lower]
-
-    try:
-        country = pycountry.countries.search_fuzzy(name_lower)[0]
-        return CANONICAL_NAMES.get(country.name, country.name)
-    except LookupError:
-        pass
-
-    all_countries = [c.name.lower() for c in pycountry.countries]
-    best_match, score = process.extractOne(name_lower, all_countries)
-    if score >= 75:
-        for c in pycountry.countries:
-            if c.name.lower() == best_match:
-                return CANONICAL_NAMES.get(c.name, c.name)
-    if score >= 60:
-        return best_match.title()
-
-    return 'Unknown'
+CANONICAL_COUNTRY_BY_LOWER = {
+    country.name.lower(): country.name for country in pycountry.countries
+}
 
 
 def normalize_country_name(raw_name: str) -> str:
@@ -189,44 +154,54 @@ def normalize_country_name(raw_name: str) -> str:
     cleaned_name = raw_name.strip()
     if not cleaned_name:
         return 'Unknown'
-
-    if cleaned_name in SPANISH_TO_ENGLISH:
-        return SPANISH_TO_ENGLISH[cleaned_name]
+    mapped = _normalize_direct(cleaned_name)
+    if mapped:
+        return mapped
 
     name_lower = cleaned_name.lower()
-    if name_lower in QUICK_FIX:
-        return QUICK_FIX[name_lower]
+    mapped = _normalize_quick(name_lower)
+    if mapped:
+        return mapped
 
-    canonical_names = [c.name for c in pycountry.countries]
-    canonical_names_lower = [name.lower() for name in canonical_names]
+    mapped = _normalize_canonical(name_lower)
+    if mapped:
+        return mapped
 
-    if name_lower in canonical_names_lower:
-        idx = canonical_names_lower.index(name_lower)
-        canonical = canonical_names[idx]
-        return CANONICAL_NAMES.get(canonical, canonical)
-
-    try:
-        country = pycountry.countries.search_fuzzy(name_lower)[0]
-        return CANONICAL_NAMES.get(country.name, country.name)
-    except LookupError:
-        pass
-
-    best_match, score = process.extractOne(name_lower, canonical_names_lower)
-    if score >= FUZZY_MATCH_CANONICAL_SCORE:
-        idx = canonical_names_lower.index(best_match)
-        canonical = canonical_names[idx]
-        return CANONICAL_NAMES.get(canonical, canonical)
-
-    if score >= FUZZY_MATCH_FALLBACK_SCORE:
-        return best_match.title()
+    mapped = _normalize_fuzzy(name_lower)
+    if mapped:
+        return mapped
 
     return 'Unknown'
 
 
-# МАКРОЕКОНОМІКА (2018 — для тренування на датасеті)
-COUNTRY_STATS_2018 = {
-    'USA':                'gdp_ppp: 62800, lpi: 3.89, inf: 2.4, tariff_zone: NAFTA',
-}
+def _normalize_direct(cleaned_name: str) -> str | None:
+    return SPANISH_TO_ENGLISH.get(cleaned_name)
+
+
+def _normalize_quick(name_lower: str) -> str | None:
+    return QUICK_FIX.get(name_lower)
+
+
+def _normalize_canonical(name_lower: str) -> str | None:
+    canonical = CANONICAL_COUNTRY_BY_LOWER.get(name_lower)
+    if canonical:
+        return CANONICAL_NAMES.get(canonical, canonical)
+    try:
+        country = pycountry.countries.search_fuzzy(name_lower)[0]
+        return CANONICAL_NAMES.get(country.name, country.name)
+    except LookupError:
+        return None
+
+
+def _normalize_fuzzy(name_lower: str) -> str | None:
+    best_match, score = process.extractOne(name_lower, list(CANONICAL_COUNTRY_BY_LOWER))
+    if score >= FUZZY_MATCH_CANONICAL_SCORE:
+        canonical = CANONICAL_COUNTRY_BY_LOWER[best_match]
+        return CANONICAL_NAMES.get(canonical, canonical)
+    if score >= FUZZY_MATCH_FALLBACK_SCORE:
+        return best_match.title()
+    return None
+
 
 COUNTRY_STATS_2018 = {
     'USA':                {'gdp_ppp': 62800,  'lpi': 3.89, 'inf': 2.4,  'tariff_zone': 'NAFTA'},
@@ -331,7 +306,6 @@ COUNTRY_STATS_2018 = {
 
 DEFAULT_STATS_2018 = {'gdp_ppp': 15000, 'lpi': 2.8, 'inf': 3.0, 'tariff_zone': 'WTO'}
 
-# Поточні дані (для ручного передбачення у main.py)
 COUNTRY_STATS_CURRENT = {
     'USA':                {'gdp_ppp': 85000,  'lpi': 4.00, 'inf': 2.8,  'tariff_zone': 'USMCA'},
     'France':             {'gdp_ppp': 58000,  'lpi': 3.90, 'inf': 2.1,  'tariff_zone': 'EU'},
@@ -356,7 +330,6 @@ COUNTRY_STATS_CURRENT = {
 
 DEFAULT_STATS_CURRENT = {'gdp_ppp': 25000, 'lpi': 3.2, 'inf': 3.5, 'tariff_zone': 'WTO'}
 
-# Ціни нафти Brent (USD/bbl) — реальні дані за місяцями
 REAL_FUEL_PRICES_2018 = {
     2015: [47.76, 58.10, 55.89, 59.52, 64.08, 61.48, 56.56, 46.52, 47.62, 48.43, 44.27, 38.01],
     2016: [30.70, 32.18, 38.21, 41.58, 46.83, 48.25, 45.07, 45.84, 46.57, 49.52, 44.73, 53.31],
@@ -365,7 +338,6 @@ REAL_FUEL_PRICES_2018 = {
 }
 REAL_FUEL_PRICE_CURRENT = 82.0
 
-# Базові митні ставки для категорій товарів
 CATEGORY_TARIFFS = {
     'Electronics': 0.00,
     'Computers':   0.00,
@@ -376,7 +348,20 @@ CATEGORY_TARIFFS = {
     'Other':       0.05
 }
 
-# Координати центрів країн
+SHIPPING_MODE_COST = {
+    'Same Day': 3.0,
+    'First Class': 2.0,
+    'Second Class': 1.2,
+    'Standard Class': 1.0,
+}
+
+SHIPPING_MODE_RANK = {
+    'Same Day': 0,
+    'First Class': 1,
+    'Second Class': 2,
+    'Standard Class': 3,
+}
+
 COUNTRY_COORDS_FALLBACK = {
     'USA':           (38.0,   -97.0),
     'France':        (46.0,     2.0),

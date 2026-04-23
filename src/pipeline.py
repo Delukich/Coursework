@@ -1,8 +1,10 @@
-import pandas as pd
-import numpy as np
-from tqdm import tqdm
 import logging
+import os
 import warnings
+
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
 
 from src.weather_service import WeatherService
 from src.economics_service import EconomicsService
@@ -11,6 +13,8 @@ from src.config import (
     RAW_DATA_PATH,
     ENRICHED_OUTPUT_PATH,
     COUNTRY_COORDS_FALLBACK,
+    SHIPPING_MODE_COST,
+    SHIPPING_MODE_RANK,
     normalize_country_name,
 )
 
@@ -61,12 +65,8 @@ FEATURES_TO_KEEP = [
     'Is_Profitable',
 ]
 
-SHIP_COST_MULT = {
-    'Same Day': 3.0,
-    'First Class': 2.0,
-    'Second Class': 1.2,
-    'Standard Class': 1.0,
-}
+DEFAULT_DISTANCE_KM = 5000.0
+DEFAULT_WEATHER = (15.0, 0.0)
 
 
 class DataPipeline:
@@ -79,6 +79,23 @@ class DataPipeline:
         self.weather_svc = WeatherService()
         self.econ_svc = EconomicsService()
         logger.info(f"Пайплайн | mode={mode} | year={self.year} | output={self.output_path}")
+
+    def _load_source_data(self) -> pd.DataFrame:
+        if not os.path.exists(self.file_path):
+            raise FileNotFoundError(f"Вхідний файл не знайдено: {self.file_path}")
+
+        df = pd.read_csv(self.file_path, encoding='latin1', low_memory=False)
+        print(f"Завантажено {len(df):,} рядків, {len(df.columns)} колонок")
+
+        if self.limit:
+            df = df.head(self.limit)
+            print(f"Обмежено до {self.limit} рядків")
+
+        return df
+
+    def _save_enriched_data(self, df: pd.DataFrame):
+        df.to_csv(self.output_path, index=False, encoding='utf-8')
+        print(f"Збережено: {self.output_path}")
 
     def _add_time_features(self, df: pd.DataFrame) -> pd.DataFrame:
         df['order_date'] = pd.to_datetime(df['order date (DateOrders)'], errors='coerce')
@@ -97,27 +114,11 @@ class DataPipeline:
     def _add_geo_features(self, df: pd.DataFrame) -> pd.DataFrame:
         print("[2/6] Геокодування пунктів призначення...")
         unique_locs = df[['Order City', 'Order Country']].drop_duplicates()
-        dest_coords: dict = {}
-
-        for _, row in tqdm(unique_locs.iterrows(), total=len(unique_locs), desc="Geocoding"):
-            lat, lon = geocode_city(row['Order City'], row['Order Country'])
-            if np.isnan(lat) or np.isnan(lon):
-                lat, lon = COUNTRY_COORDS_FALLBACK.get(row['Order Country'], (np.nan, np.nan))
-            dest_coords[(row['Order City'], row['Order Country'])] = (lat, lon)
-
-        def calc_dist(row):
-            dest = dest_coords.get((row['Order City'], row['Order Country']))
-            if not dest or pd.isna(row.get('Latitude')) or pd.isna(row.get('Longitude')):
-                return 5000.0
-            d = haversine_distance(row['Latitude'], row['Longitude'], dest[0], dest[1])
-            return d if not np.isnan(d) else 5000.0
-
-        df['Distance_KM'] = df.apply(calc_dist, axis=1)
-
-        df['_dest_lat'] = df.apply(
-            lambda r: dest_coords.get((r['Order City'], r['Order Country']), (np.nan, np.nan))[0], axis=1)
-        df['_dest_lon'] = df.apply(
-            lambda r: dest_coords.get((r['Order City'], r['Order Country']), (np.nan, np.nan))[1], axis=1)
+        dest_coords = self._build_dest_coords(unique_locs)
+        df = self._attach_dest_coords(df, dest_coords)
+        df['Distance_KM'] = df.apply(
+            lambda row: self._calc_distance_km(row, dest_coords), axis=1
+        )
 
         df['dest_lat_abs'] = df['_dest_lat'].abs()
         df['cross_hemisphere'] = (
@@ -125,26 +126,50 @@ class DataPipeline:
             (df['Latitude'].fillna(0) < 0) & (df['_dest_lat'].fillna(0) > 0)
         ).astype(int)
 
-        return df, dest_coords
+        return df
+
+    def _build_dest_coords(self, unique_locs: pd.DataFrame) -> dict:
+        dest_coords: dict = {}
+        for _, row in tqdm(unique_locs.iterrows(), total=len(unique_locs), desc="Geocoding"):
+            lat, lon = geocode_city(row['Order City'], row['Order Country'])
+            if np.isnan(lat) or np.isnan(lon):
+                lat, lon = COUNTRY_COORDS_FALLBACK.get(row['Order Country'], (np.nan, np.nan))
+            dest_coords[(row['Order City'], row['Order Country'])] = (lat, lon)
+        return dest_coords
+
+    def _attach_dest_coords(self, df: pd.DataFrame, dest_coords: dict) -> pd.DataFrame:
+        df['_dest_lat'] = df.apply(
+            lambda r: dest_coords.get((r['Order City'], r['Order Country']), (np.nan, np.nan))[0], axis=1
+        )
+        df['_dest_lon'] = df.apply(
+            lambda r: dest_coords.get((r['Order City'], r['Order Country']), (np.nan, np.nan))[1], axis=1
+        )
+        return df
+
+    def _calc_distance_km(self, row: pd.Series, dest_coords: dict) -> float:
+        dest = dest_coords.get((row['Order City'], row['Order Country']))
+        if not dest or pd.isna(row.get('Latitude')) or pd.isna(row.get('Longitude')):
+            return DEFAULT_DISTANCE_KM
+        distance = haversine_distance(row['Latitude'], row['Longitude'], dest[0], dest[1])
+        return distance if not np.isnan(distance) else DEFAULT_DISTANCE_KM
 
     def _add_weather_features(self, df: pd.DataFrame) -> pd.DataFrame:
         print("[3/6] Погодні дані...")
-
-        def get_weather(row):
-            if pd.isna(row['_dest_lat']) or pd.isna(row['_dest_lon']) or pd.isna(row['order_date']):
-                return 15.0, 0.0
-            w = self.weather_svc.get_real_weather(
-                row['_dest_lat'], row['_dest_lon'], row['order_date'].date()
-            )
-            return w['temp'], w['rain']
-
-        results = [get_weather(r) for _, r in tqdm(df.iterrows(), total=len(df), desc="Weather")]
+        results = [self._get_weather_for_row(r) for _, r in tqdm(df.iterrows(), total=len(df), desc="Weather")]
         df['Real_Temp_C'], df['Real_Rain_mm'] = zip(*results)
 
         df['is_cold'] = (df['Real_Temp_C'] < 0).astype(int)
         df['is_heavy_rain'] = (df['Real_Rain_mm'] > 10.0).astype(int)
 
         return df
+
+    def _get_weather_for_row(self, row: pd.Series) -> tuple:
+        if pd.isna(row['_dest_lat']) or pd.isna(row['_dest_lon']) or pd.isna(row['order_date']):
+            return DEFAULT_WEATHER
+        weather = self.weather_svc.get_real_weather(
+            row['_dest_lat'], row['_dest_lon'], row['order_date'].date()
+        )
+        return weather['temp'], weather['rain']
 
     def _add_econ_features(self, df: pd.DataFrame) -> tuple:
         print("[4/6] Макроекономічні дані...")
@@ -168,9 +193,8 @@ class DataPipeline:
         price = df['Order Item Product Price'].fillna(0)
         qty = df['Order Item Quantity'].fillna(1).clip(lower=1)
         discount = df['Order Item Discount Rate'].fillna(0)
-        dist = df['Distance_KM'].fillna(5000).clip(lower=1)
+        dist = df['Distance_KM'].fillna(DEFAULT_DISTANCE_KM).clip(lower=1)
         fuel = df['Real_Fuel_Price'].fillna(60)
-        sched = df['Days for shipment (scheduled)'].fillna(4).clip(lower=1)
 
         df['price_per_km'] = (price * qty * (1 - discount)) / dist
 
@@ -178,11 +202,8 @@ class DataPipeline:
 
         df['fuel_x_distance'] = (fuel / 60.0) * (dist / 1000.0)
 
-        SHIP_SLA = {'Same Day': 0, 'First Class': 1, 'Second Class': 2, 'Standard Class': 3}
-        df['ship_sla_rank'] = df['Shipping Mode'].map(SHIP_SLA).fillna(3)
-
-        SHIP_COST = {'Same Day': 3.0, 'First Class': 2.0, 'Second Class': 1.2, 'Standard Class': 1.0}
-        df['ship_cost_per_km'] = df['Shipping Mode'].map(SHIP_COST).fillna(1.0) * df['Real_Fuel_Price'] / dist
+        df['ship_sla_rank'] = df['Shipping Mode'].map(SHIPPING_MODE_RANK).fillna(3)
+        df['ship_cost_per_km'] = df['Shipping Mode'].map(SHIPPING_MODE_COST).fillna(1.0) * df['Real_Fuel_Price'] / dist
 
         return df
 
@@ -190,7 +211,7 @@ class DataPipeline:
         print("[5/6] Розрахунок реалістичної прибутковості (таргет)...")
 
         fuel_mult = df['Real_Fuel_Price'] / 60.0
-        ship_mult = df['Shipping Mode'].map(SHIP_COST_MULT).fillna(1.0)
+        ship_mult = df['Shipping Mode'].map(SHIPPING_MODE_COST).fillna(1.0)
 
         distance_penalty = (df['Distance_KM'] / 1000.0) * fuel_mult * ship_mult
         weather_penalty = np.where(df['Real_Rain_mm'] > 5.0, 2.0, 0.0)
@@ -221,7 +242,7 @@ class DataPipeline:
         df = self._normalize_reference_fields(df)
         df = self._add_time_features(df)
 
-        df, dest_coords = self._add_geo_features(df)
+        df = self._add_geo_features(df)
         df = self._add_weather_features(df)
         df, econ_map = self._add_econ_features(df)
         df = self._add_derived_features(df)
@@ -248,24 +269,13 @@ class DataPipeline:
         return df_clean
 
     def run(self):
-        import os
         print(f"\n{'='*60}")
         print(f"  DataPipeline | mode={self.mode} | {self.file_path}")
         print(f"{'='*60}")
 
-        if not os.path.exists(self.file_path):
-            raise FileNotFoundError(f"Вхідний файл не знайдено: {self.file_path}")
-
-        df = pd.read_csv(self.file_path, encoding='latin1', low_memory=False)
-        print(f"Завантажено {len(df):,} рядків, {len(df.columns)} колонок")
-
-        if self.limit:
-            df = df.head(self.limit)
-            print(f"Обмежено до {self.limit} рядків")
-
+        df = self._load_source_data()
         enriched_df = self.enrich_features(df)
-        enriched_df.to_csv(self.output_path, index=False, encoding='utf-8')
-        print(f"Збережено: {self.output_path}")
+        self._save_enriched_data(enriched_df)
         return enriched_df
 
 

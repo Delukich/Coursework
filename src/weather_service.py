@@ -52,16 +52,53 @@ class WeatherService:
         key = f"{lat:.4f}_{lon:.4f}_{date_obj.isoformat()}"
 
         if key in weather_cache:
-            return weather_cache[key]
+            cached = weather_cache[key]
+            if OFFLINE and cached == self.FALLBACK:
+                cached = self._estimate_climate(lat, date_obj)
+                weather_cache[key] = cached
+                save_weather_cache(weather_cache)
+            return cached
 
-        if OFFLINE:
-            result = self.FALLBACK.copy()
-        else:
-            result = self._fetch_from_api(lat, lon, date_obj)
+        result = self._get_weather_result(lat, lon, date_obj)
 
         weather_cache[key] = result
         save_weather_cache(weather_cache)
         return result
+
+    def _get_weather_result(self, lat: float, lon: float, date_obj: date) -> Dict[str, float]:
+        if OFFLINE:
+            return self._estimate_climate(lat, date_obj)
+        return self._fetch_from_api(lat, lon, date_obj)
+
+    def _estimate_climate(self, lat: float, date_obj: date) -> Dict[str, float]:
+        abs_lat = abs(float(lat))
+        month = int(date_obj.month)
+
+        mean_temp = max(-2.0, 28.0 - 0.42 * abs_lat)
+        temp_amplitude = min(18.0, 2.0 + 0.22 * abs_lat)
+
+        peak_month = 7 if lat >= 0 else 1
+        seasonal_phase = np.cos((month - peak_month) * 2.0 * np.pi / 12.0)
+        temp_c = mean_temp + temp_amplitude * seasonal_phase
+
+        if abs_lat < 15:
+            mean_rain = 5.5
+            rain_amplitude = 2.5
+        elif abs_lat < 30:
+            mean_rain = 3.0
+            rain_amplitude = 1.8
+        else:
+            mean_rain = 1.4
+            rain_amplitude = 1.0
+
+        wet_peak_month = 8 if lat >= 0 else 2
+        wet_phase = np.cos((month - wet_peak_month) * 2.0 * np.pi / 12.0)
+        rain_mm = max(0.0, mean_rain + rain_amplitude * wet_phase)
+
+        return {
+            'temp': round(float(temp_c), 1),
+            'rain': round(float(rain_mm), 1),
+        }
 
     def _fetch_from_api(self, lat: float, lon: float, date_obj: date) -> Dict[str, float]:
         params = {
@@ -90,4 +127,4 @@ class WeatherService:
             logger.error(f"Помилка запиту погоди: {e}")
         except Exception as e:
             logger.error(f"Несподівана помилка погоди: {e}")
-        return self.FALLBACK.copy()
+        return self._estimate_climate(lat, date_obj)

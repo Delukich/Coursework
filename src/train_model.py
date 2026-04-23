@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import xgboost as xgb
+from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
@@ -27,7 +28,6 @@ from sklearn.metrics import (
     roc_curve,
 )
 from sklearn.model_selection import StratifiedKFold, train_test_split
-from sklearn.calibration import calibration_curve
 
 from src.config import CATEGORICAL_COLUMNS_USED, FEATURE_META_PATH, MODEL_PATH
 
@@ -35,6 +35,8 @@ warnings.filterwarnings("ignore")
 
 plt.style.use("ggplot")
 sns.set_palette("viridis")
+plt.rcParams["font.family"] = "DejaVu Sans"
+plt.rcParams["axes.unicode_minus"] = False
 
 try:
     import optuna
@@ -54,7 +56,6 @@ except ImportError:
 
 
 class ProfitabilityClassifier:
-
     DEFAULT_XGB_PARAMS = {
         "random_state": 42,
         "n_jobs": -1,
@@ -107,12 +108,10 @@ class ProfitabilityClassifier:
         return prepared
 
     def prepare_datasets(self, df: pd.DataFrame) -> dict[str, pd.DataFrame | pd.Series]:
-        print("\n[1/5] Preparing data for XGBoost...")
+        print("\n[1/5] Підготовка даних для XGBoost...")
 
         if "Is_Profitable" not in df.columns:
-            raise ValueError(
-                "Column 'Is_Profitable' is missing. Run the data pipeline first."
-            )
+            raise ValueError("Column 'Is_Profitable' is missing. Run the data pipeline first.")
 
         prepared = self._cast_categorical_columns(df)
         prepared = self._drop_remaining_object_columns(prepared)
@@ -122,17 +121,20 @@ class ProfitabilityClassifier:
 
         balance = y.value_counts(normalize=True)
         print(
-            f"  Class balance: profitable={balance.get(1, 0):.1%} | "
-            f"non-profitable={balance.get(0, 0):.1%}"
+            f"  Баланс класів: прибуткові={balance.get(1, 0):.1%} | "
+            f"збиткові={balance.get(0, 0):.1%}"
         )
 
-        X_dev, X_test, y_dev, y_test = train_test_split(
-            X, y, test_size=0.15, random_state=42, stratify=y
-        )
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_dev, y_dev, test_size=0.1765, random_state=42, stratify=y_dev
-        )
-
+        (
+            X_train,
+            X_val,
+            X_test,
+            X_dev,
+            y_train,
+            y_val,
+            y_test,
+            y_dev,
+        ) = self._split_train_val_test(X, y)
         self.feature_names = X_train.columns.tolist()
         self.medians = X_train.select_dtypes(include=np.number).median().to_dict()
 
@@ -156,8 +158,17 @@ class ProfitabilityClassifier:
             "y_dev": y_dev,
         }
 
+    def _split_train_val_test(self, X: pd.DataFrame, y: pd.Series):
+        X_dev, X_test, y_dev, y_test = train_test_split(
+            X, y, test_size=0.15, random_state=42, stratify=y
+        )
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_dev, y_dev, test_size=0.1765, random_state=42, stratify=y_dev
+        )
+        return X_train, X_val, X_test, X_dev, y_train, y_val, y_test, y_dev
+
     def cross_validate(self, X: pd.DataFrame, y: pd.Series, params: dict | None = None) -> dict:
-        print("\n[2/5] Running StratifiedKFold CV (5 folds)...")
+        print("\n[2/5] Запуск StratifiedKFold CV (5 фолдів)...")
 
         cv_params = self.DEFAULT_XGB_PARAMS.copy()
         if params:
@@ -191,7 +202,7 @@ class ProfitabilityClassifier:
             fold_metrics["f1"].append(f1)
             print(f"  Fold {fold}: AUC={auc:.4f} | Acc={acc:.4f} | F1={f1:.4f}")
 
-        print("\n  CV summary:")
+        print("\n  Підсумок CV:")
         for metric, values in fold_metrics.items():
             print(f"    {metric.upper()}: {np.mean(values):.4f} +/- {np.std(values):.4f}")
 
@@ -211,7 +222,7 @@ class ProfitabilityClassifier:
             print("\n[3/5] Optuna is not installed. Using default XGBoost parameters.")
             return self.DEFAULT_XGB_PARAMS.copy()
 
-        print("\n[3/5] Searching for hyperparameters with Optuna...")
+        print("\n[3/5] Пошук гіперпараметрів через Optuna...")
 
         def objective(trial):
             params = {
@@ -239,7 +250,7 @@ class ProfitabilityClassifier:
         study.optimize(objective, n_trials=50, timeout=300, show_progress_bar=False)
 
         print(
-            f"  Best validation ROC-AUC: {study.best_value:.4f} "
+            f"  Найкращий validation ROC-AUC: {study.best_value:.4f} "
             f"(trial #{study.best_trial.number})"
         )
 
@@ -258,43 +269,33 @@ class ProfitabilityClassifier:
                 best_f1 = float(score)
                 best_threshold = float(threshold)
 
-        print(f"  Chosen threshold from validation split: {best_threshold:.2f} (macro F1={best_f1:.4f})")
+        print(
+            f"  Обраний поріг за validation split: "
+            f"{best_threshold:.2f} (macro F1={best_f1:.4f})"
+        )
         return best_threshold
 
     def train_evaluate(self, df: pd.DataFrame):
         datasets = self.prepare_datasets(df)
-        X_train = datasets["X_train"]
-        X_val = datasets["X_val"]
-        X_test = datasets["X_test"]
-        X_dev = datasets["X_dev"]
-        y_train = datasets["y_train"]
-        y_val = datasets["y_val"]
-        y_test = datasets["y_test"]
-        y_dev = datasets["y_dev"]
-
+        X_train, X_val, X_test, X_dev = (
+            datasets["X_train"],
+            datasets["X_val"],
+            datasets["X_test"],
+            datasets["X_dev"],
+        )
+        y_train, y_val, y_test, y_dev = (
+            datasets["y_train"],
+            datasets["y_val"],
+            datasets["y_test"],
+            datasets["y_dev"],
+        )
         cv_results = self.cross_validate(X_dev, y_dev)
         best_params = self.optimize_hyperparameters(X_train, y_train, X_val, y_val)
-
-        print("\n[4/5] Fitting final model on train + validation data...")
-        validation_model = xgb.XGBClassifier(**best_params)
-        validation_model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
-        val_proba = validation_model.predict_proba(X_val)[:, 1]
-        self.optimal_threshold = self.choose_threshold(y_val, val_proba)
-
-        self.best_model = xgb.XGBClassifier(**best_params)
-        self.best_model.fit(X_dev, y_dev, eval_set=[(X_test, y_test)], verbose=False)
-
-        print("\n[5/5] Evaluating on held-out test data...")
-        test_proba = self.best_model.predict_proba(X_test)[:, 1]
-        final_preds = (test_proba >= self.optimal_threshold).astype(int)
-
-        acc = accuracy_score(y_test, final_preds)
-        balanced_acc = balanced_accuracy_score(y_test, final_preds)
-        roc = roc_auc_score(y_test, test_proba)
-        ap = average_precision_score(y_test, test_proba)
-        mcc = matthews_corrcoef(y_test, final_preds)
-        kappa = cohen_kappa_score(y_test, final_preds)
-        brier = brier_score_loss(y_test, test_proba)
+        val_proba = self._train_for_threshold(X_train, y_train, X_val, y_val, best_params)
+        test_proba, final_preds = self._train_final_model(X_dev, y_dev, X_test, y_test, best_params)
+        acc, balanced_acc, roc, ap, mcc, kappa, brier = self._score_metrics(
+            y_test, final_preds, test_proba
+        )
 
         print(f"\n{'=' * 58}")
         print(f"  Accuracy         : {acc:.4f}")
@@ -339,8 +340,33 @@ class ProfitabilityClassifier:
         self._save_metrics_report(metrics_summary, cv_results, y_test, final_preds)
         self._save_artifacts(metrics_summary, cv_results)
 
+    def _train_for_threshold(self, X_train, y_train, X_val, y_val, best_params):
+        print("\n[4/5] Навчання фінальної моделі на train + validation...")
+        validation_model = xgb.XGBClassifier(**best_params)
+        validation_model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+        val_proba = validation_model.predict_proba(X_val)[:, 1]
+        self.optimal_threshold = self.choose_threshold(y_val, val_proba)
+        return val_proba
+
+    def _train_final_model(self, X_dev, y_dev, X_test, y_test, best_params):
+        self.best_model = xgb.XGBClassifier(**best_params)
+        self.best_model.fit(X_dev, y_dev, eval_set=[(X_test, y_test)], verbose=False)
+        print("\n[5/5] Оцінка на відкладеній тестовій вибірці...")
+        test_proba = self.best_model.predict_proba(X_test)[:, 1]
+        final_preds = (test_proba >= self.optimal_threshold).astype(int)
+        return test_proba, final_preds
+
+    def _score_metrics(self, y_test, final_preds, test_proba):
+        acc = accuracy_score(y_test, final_preds)
+        balanced_acc = balanced_accuracy_score(y_test, final_preds)
+        roc = roc_auc_score(y_test, test_proba)
+        ap = average_precision_score(y_test, test_proba)
+        mcc = matthews_corrcoef(y_test, final_preds)
+        kappa = cohen_kappa_score(y_test, final_preds)
+        brier = brier_score_loss(y_test, test_proba)
+        return acc, balanced_acc, roc, ap, mcc, kappa, brier
+
     def _save_artifacts(self, metrics_summary: dict, cv_results: dict):
-        """Persist the fitted model and feature metadata for inference."""
         joblib.dump(self.best_model, MODEL_PATH)
         joblib.dump(
             {
@@ -370,8 +396,8 @@ class ProfitabilityClassifier:
             annot=True,
             fmt="d",
             cmap="Blues",
-            xticklabels=["Неприбуткове", "Прибуткове"],
-            yticklabels=["Неприбуткове", "Прибуткове"],
+            xticklabels=["Збиткове", "Прибуткове"],
+            yticklabels=["Збиткове", "Прибуткове"],
             ax=ax,
         )
         ax.set_title(f"Матриця помилок (поріг={self.optimal_threshold:.2f})")
@@ -387,8 +413,8 @@ class ProfitabilityClassifier:
         fig, ax = plt.subplots(figsize=(7, 6))
         ax.plot(fpr, tpr, color="navy", lw=2, label=f"ROC AUC = {roc_score:.3f}")
         ax.plot([0, 1], [0, 1], color="gray", linestyle="--", lw=1)
-        ax.set_xlabel("Частка хибно-позитивних")
-        ax.set_ylabel("Частка істинно-позитивних")
+        ax.set_xlabel("Частка хибнопозитивних")
+        ax.set_ylabel("Частка істиннопозитивних")
         ax.set_title("ROC-крива")
         ax.legend()
         fig.tight_layout()
@@ -399,7 +425,7 @@ class ProfitabilityClassifier:
     def _plot_precision_recall(self, y_true, preds_proba, ap_score):
         precision, recall, _ = precision_recall_curve(y_true, preds_proba)
         fig, ax = plt.subplots(figsize=(7, 6))
-        ax.plot(recall, precision, color="darkorange", lw=2, label=f"Сер. Precision = {ap_score:.3f}")
+        ax.plot(recall, precision, color="darkorange", lw=2, label=f"Середня precision = {ap_score:.3f}")
         ax.set_xlabel("Повнота (Recall)")
         ax.set_ylabel("Точність (Precision)")
         ax.set_title("Крива Precision-Recall")
@@ -470,9 +496,31 @@ class ProfitabilityClassifier:
 
     def _plot_probability_distribution(self, y_true, preds_proba):
         fig, ax = plt.subplots(figsize=(9, 5))
-        sns.histplot(preds_proba[y_true == 0], color="crimson", label="Неприбуткове", stat="density", bins=30, alpha=0.45, ax=ax)
-        sns.histplot(preds_proba[y_true == 1], color="seagreen", label="Прибуткове", stat="density", bins=30, alpha=0.45, ax=ax)
-        ax.axvline(self.optimal_threshold, color="black", linestyle="--", lw=1.5, label=f"Поріг={self.optimal_threshold:.2f}")
+        sns.histplot(
+            preds_proba[y_true == 0],
+            color="crimson",
+            label="Збиткове",
+            stat="density",
+            bins=30,
+            alpha=0.45,
+            ax=ax,
+        )
+        sns.histplot(
+            preds_proba[y_true == 1],
+            color="seagreen",
+            label="Прибуткове",
+            stat="density",
+            bins=30,
+            alpha=0.45,
+            ax=ax,
+        )
+        ax.axvline(
+            self.optimal_threshold,
+            color="black",
+            linestyle="--",
+            lw=1.5,
+            label=f"Поріг={self.optimal_threshold:.2f}",
+        )
         ax.set_xlabel("Передбачена ймовірність")
         ax.set_ylabel("Щільність")
         ax.set_title("Розподіл передбачених ймовірностей")
@@ -509,28 +557,28 @@ class ProfitabilityClassifier:
         report_path = "plots/metrics_report.txt"
         lines = [
             "=" * 58,
-            "Profitability Classifier - Metrics Report",
+            "Звіт про метрики класифікатора прибутковості",
             "=" * 58,
             "",
-            f"Accuracy         : {metrics_summary['accuracy']:.4f}",
-            f"Balanced Accuracy: {metrics_summary['balanced_accuracy']:.4f}",
-            f"ROC AUC          : {metrics_summary['roc_auc']:.4f}",
-            f"Average Precision: {metrics_summary['avg_precision']:.4f}",
-            f"MCC              : {metrics_summary['mcc']:.4f}",
-            f"Cohen Kappa      : {metrics_summary['cohen_kappa']:.4f}",
-            f"Brier Score      : {metrics_summary['brier_score']:.4f}",
-            f"Optimal Threshold: {self.optimal_threshold:.2f}",
+            f"Точність (Accuracy)           : {metrics_summary['accuracy']:.4f}",
+            f"Збалансована точність         : {metrics_summary['balanced_accuracy']:.4f}",
+            f"ROC AUC                       : {metrics_summary['roc_auc']:.4f}",
+            f"Середня precision             : {metrics_summary['avg_precision']:.4f}",
+            f"MCC                           : {metrics_summary['mcc']:.4f}",
+            f"Коефіцієнт Каппа Коена        : {metrics_summary['cohen_kappa']:.4f}",
+            f"Brier Score                   : {metrics_summary['brier_score']:.4f}",
+            f"Оптимальний поріг             : {self.optimal_threshold:.2f}",
             "",
-            "Cross-Validation (5-fold on development split):",
+            "Крос-валідація (5 фолдів на development-вибірці):",
             f"  AUC : {cv_results['auc']['mean']:.4f} +/- {cv_results['auc']['std']:.4f}",
             f"  Acc : {cv_results['acc']['mean']:.4f} +/- {cv_results['acc']['std']:.4f}",
             f"  F1  : {cv_results['f1']['mean']:.4f} +/- {cv_results['f1']['std']:.4f}",
             "",
-            "Classification Report:",
+            "Класифікаційний звіт:",
             classification_report(
                 y_true,
                 final_preds,
-                target_names=["Not Profitable (0)", "Profitable (1)"],
+                target_names=["Збиткове (0)", "Прибуткове (1)"],
             ),
         ]
         with open(report_path, "w", encoding="utf-8") as file:
@@ -542,8 +590,6 @@ if __name__ == "__main__":
     from src.config import ENRICHED_OUTPUT_PATH
 
     if os.path.exists(ENRICHED_OUTPUT_PATH):
-        ProfitabilityClassifier().train_evaluate(
-            pd.read_csv(ENRICHED_OUTPUT_PATH, low_memory=False)
-        )
+        ProfitabilityClassifier().train_evaluate(pd.read_csv(ENRICHED_OUTPUT_PATH, low_memory=False))
     else:
         print(f"File not found: {ENRICHED_OUTPUT_PATH}\nRun the data pipeline first.")
