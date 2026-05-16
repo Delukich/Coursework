@@ -3,12 +3,11 @@ pandas
 scikit-learn
 xgboost
 optuna
-category-encoders
 matplotlib
 seaborn
+shap
 requests
 tqdm
 joblib
 pycountry
 fuzzywuzzy
-python-Levenshtein

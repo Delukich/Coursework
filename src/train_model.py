@@ -80,6 +80,26 @@ class ProfitabilityClassifier:
         self.best_model = None
         self.optimal_threshold: float = 0.5
 
+    def _compute_naive_baseline(self, y_true: pd.Series) -> dict[str, float]:
+        prevalence = float(y_true.mean())
+        baseline_proba = np.full(len(y_true), prevalence, dtype=float)
+        baseline_preds = (baseline_proba >= 0.5).astype(int)
+        accuracy, balanced_accuracy, roc_auc, avg_precision, mcc, cohen_kappa, brier_score = (
+            self._score_metrics(y_true, baseline_preds, baseline_proba)
+        )
+        macro_f1 = f1_score(y_true, baseline_preds, average="macro", zero_division=0)
+        return {
+            "prevalence": prevalence,
+            "accuracy": accuracy,
+            "balanced_accuracy": balanced_accuracy,
+            "roc_auc": roc_auc,
+            "avg_precision": avg_precision,
+            "mcc": mcc,
+            "cohen_kappa": cohen_kappa,
+            "brier_score": brier_score,
+            "macro_f1": macro_f1,
+        }
+
     def _cast_categorical_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         prepared = df.copy()
         for col in CATEGORICAL_COLUMNS_USED:
@@ -91,7 +111,7 @@ class ProfitabilityClassifier:
         prepared = df.copy()
         obj_cols = prepared.select_dtypes(include=["object"]).columns.tolist()
         if obj_cols:
-            print(f"  Dropped unsupported object columns: {obj_cols}")
+            print(f"  Видалено непідтримувані стовпці типу object: {obj_cols}")
             prepared = prepared.drop(columns=obj_cols)
         return prepared
 
@@ -111,7 +131,7 @@ class ProfitabilityClassifier:
         print("\n[1/5] Підготовка даних для XGBoost...")
 
         if "Is_Profitable" not in df.columns:
-            raise ValueError("Column 'Is_Profitable' is missing. Run the data pipeline first.")
+            raise ValueError("Стовпець 'Is_Profitable' відсутній. Спочатку запустіть пайплайн даних")
 
         prepared = self._cast_categorical_columns(df)
         prepared = self._drop_remaining_object_columns(prepared)
@@ -144,7 +164,7 @@ class ProfitabilityClassifier:
         X_dev = self._fill_numeric_missing(X_dev, self.medians)
 
         print(
-            f"  Train: {len(X_train):,} | Validation: {len(X_val):,} | Test: {len(X_test):,}"
+            f"  Навчання: {len(X_train):,} | Валідація: {len(X_val):,} | Тест: {len(X_test):,}"
         )
 
         return {
@@ -219,7 +239,7 @@ class ProfitabilityClassifier:
         y_val: pd.Series,
     ) -> dict:
         if not OPTUNA_AVAILABLE:
-            print("\n[3/5] Optuna is not installed. Using default XGBoost parameters.")
+            print("\n[3/5] Optuna не встановлено. Використовуються стандартні параметри XGBoost")
             return self.DEFAULT_XGB_PARAMS.copy()
 
         print("\n[3/5] Пошук гіперпараметрів через Optuna...")
@@ -296,8 +316,10 @@ class ProfitabilityClassifier:
         acc, balanced_acc, roc, ap, mcc, kappa, brier = self._score_metrics(
             y_test, final_preds, test_proba
         )
+        baseline_metrics = self._compute_naive_baseline(y_test)
+        macro_f1 = f1_score(y_test, final_preds, average="macro", zero_division=0)
 
-        print(f"\n{'=' * 58}")
+        print(f"\n{'=' * 60}")
         print(f"  Accuracy         : {acc:.4f}")
         print(f"  Balanced Accuracy: {balanced_acc:.4f}")
         print(f"  ROC AUC          : {roc:.4f}")
@@ -305,8 +327,20 @@ class ProfitabilityClassifier:
         print(f"  MCC              : {mcc:.4f}")
         print(f"  Cohen Kappa      : {kappa:.4f}")
         print(f"  Brier Score      : {brier:.4f}")
+        print(f"  Macro F1         : {macro_f1:.4f}")
         print(f"  Optimal Threshold: {self.optimal_threshold:.2f}")
-        print(f"{'=' * 58}")
+        print(f"\n{'-' * 60}")
+        print("  Naive Baseline   :")
+        print(f"    Prevalence     : {baseline_metrics['prevalence']:.4f}")
+        print(f"    Accuracy       : {baseline_metrics['accuracy']:.4f}")
+        print(f"    Balanced Acc   : {baseline_metrics['balanced_accuracy']:.4f}")
+        print(f"    ROC AUC        : {baseline_metrics['roc_auc']:.4f}")
+        print(f"    Avg Precision  : {baseline_metrics['avg_precision']:.4f}")
+        print(f"    MCC            : {baseline_metrics['mcc']:.4f}")
+        print(f"    Cohen Kappa    : {baseline_metrics['cohen_kappa']:.4f}")
+        print(f"    Brier Score    : {baseline_metrics['brier_score']:.4f}")
+        print(f"    Macro F1       : {baseline_metrics['macro_f1']:.4f}")
+        print(f"{'=' * 60}")
         print(
             classification_report(
                 y_test,
@@ -326,7 +360,7 @@ class ProfitabilityClassifier:
         if SHAP_AVAILABLE:
             self._plot_shap(X_test)
         else:
-            print("  SHAP is not installed. Skipping SHAP plots.")
+            print("  SHAP не встановлено. Побудову SHAP-графіків пропущено")
 
         metrics_summary = {
             "accuracy": acc,
@@ -336,9 +370,10 @@ class ProfitabilityClassifier:
             "mcc": mcc,
             "cohen_kappa": kappa,
             "brier_score": brier,
+            "macro_f1": macro_f1,
         }
-        self._save_metrics_report(metrics_summary, cv_results, y_test, final_preds)
-        self._save_artifacts(metrics_summary, cv_results)
+        self._save_metrics_report(metrics_summary, baseline_metrics, cv_results, y_test, final_preds)
+        self._save_artifacts(metrics_summary, baseline_metrics, cv_results)
 
     def _train_for_threshold(self, X_train, y_train, X_val, y_val, best_params):
         print("\n[4/5] Навчання фінальної моделі на train + validation...")
@@ -350,7 +385,7 @@ class ProfitabilityClassifier:
 
     def _train_final_model(self, X_dev, y_dev, X_test, y_test, best_params):
         self.best_model = xgb.XGBClassifier(**best_params)
-        self.best_model.fit(X_dev, y_dev, eval_set=[(X_test, y_test)], verbose=False)
+        self.best_model.fit(X_dev, y_dev, verbose=False)
         print("\n[5/5] Оцінка на відкладеній тестовій вибірці...")
         test_proba = self.best_model.predict_proba(X_test)[:, 1]
         final_preds = (test_proba >= self.optimal_threshold).astype(int)
@@ -366,7 +401,7 @@ class ProfitabilityClassifier:
         brier = brier_score_loss(y_test, test_proba)
         return acc, balanced_acc, roc, ap, mcc, kappa, brier
 
-    def _save_artifacts(self, metrics_summary: dict, cv_results: dict):
+    def _save_artifacts(self, metrics_summary: dict, baseline_metrics: dict, cv_results: dict):
         joblib.dump(self.best_model, MODEL_PATH)
         joblib.dump(
             {
@@ -380,13 +415,23 @@ class ProfitabilityClassifier:
                 "mcc": metrics_summary["mcc"],
                 "cohen_kappa": metrics_summary["cohen_kappa"],
                 "brier_score": metrics_summary["brier_score"],
+                "macro_f1": metrics_summary["macro_f1"],
                 "cv_auc_mean": cv_results["auc"]["mean"],
                 "cv_auc_std": cv_results["auc"]["std"],
+                "baseline_prevalence": baseline_metrics["prevalence"],
+                "baseline_accuracy": baseline_metrics["accuracy"],
+                "baseline_balanced_accuracy": baseline_metrics["balanced_accuracy"],
+                "baseline_roc_auc": baseline_metrics["roc_auc"],
+                "baseline_avg_precision": baseline_metrics["avg_precision"],
+                "baseline_mcc": baseline_metrics["mcc"],
+                "baseline_cohen_kappa": baseline_metrics["cohen_kappa"],
+                "baseline_brier_score": baseline_metrics["brier_score"],
+                "baseline_macro_f1": baseline_metrics["macro_f1"],
             },
             FEATURE_META_PATH,
         )
-        print(f"\nModel saved to: {MODEL_PATH}")
-        print(f"Metadata saved to: {FEATURE_META_PATH}")
+        print(f"\nМодель збережено у: {MODEL_PATH}")
+        print(f"Метадані збережено у: {FEATURE_META_PATH}")
 
     def _plot_confusion_matrix(self, y_true, preds):
         cm = confusion_matrix(y_true, preds)
@@ -406,7 +451,7 @@ class ProfitabilityClassifier:
         fig.tight_layout()
         fig.savefig("plots/confusion_matrix.png", dpi=150)
         plt.close(fig)
-        print("  Saved: plots/confusion_matrix.png")
+        print("  Збережено: plots/confusion_matrix.png")
 
     def _plot_roc_curve(self, y_true, preds_proba, roc_score):
         fpr, tpr, _ = roc_curve(y_true, preds_proba)
@@ -420,7 +465,7 @@ class ProfitabilityClassifier:
         fig.tight_layout()
         fig.savefig("plots/roc_curve.png", dpi=150)
         plt.close(fig)
-        print("  Saved: plots/roc_curve.png")
+        print("  Збережено: plots/roc_curve.png")
 
     def _plot_precision_recall(self, y_true, preds_proba, ap_score):
         precision, recall, _ = precision_recall_curve(y_true, preds_proba)
@@ -433,7 +478,7 @@ class ProfitabilityClassifier:
         fig.tight_layout()
         fig.savefig("plots/precision_recall.png", dpi=150)
         plt.close(fig)
-        print("  Saved: plots/precision_recall.png")
+        print("  Збережено: plots/precision_recall.png")
 
     def _plot_feature_importance(self):
         fig, axes = plt.subplots(1, 2, figsize=(16, 8))
@@ -448,7 +493,7 @@ class ProfitabilityClassifier:
         fig.tight_layout()
         fig.savefig("plots/feature_importance.png", dpi=150)
         plt.close(fig)
-        print("  Saved: plots/feature_importance.png")
+        print("  Збережено: plots/feature_importance.png")
 
     def _plot_threshold_search(self, y_true, preds_proba):
         thresholds = np.arange(0.05, 0.95, 0.01)
@@ -478,7 +523,7 @@ class ProfitabilityClassifier:
         fig.tight_layout()
         fig.savefig("plots/threshold_search.png", dpi=150)
         plt.close(fig)
-        print("  Saved: plots/threshold_search.png")
+        print("  Збережено: plots/threshold_search.png")
 
     def _plot_calibration_curve(self, y_true, preds_proba):
         frac_pos, mean_pred = calibration_curve(y_true, preds_proba, n_bins=10, strategy="quantile")
@@ -492,7 +537,7 @@ class ProfitabilityClassifier:
         fig.tight_layout()
         fig.savefig("plots/calibration_curve.png", dpi=150)
         plt.close(fig)
-        print("  Saved: plots/calibration_curve.png")
+        print("  Збережено: plots/calibration_curve.png")
 
     def _plot_probability_distribution(self, y_true, preds_proba):
         fig, ax = plt.subplots(figsize=(9, 5))
@@ -528,11 +573,11 @@ class ProfitabilityClassifier:
         fig.tight_layout()
         fig.savefig("plots/probability_distribution.png", dpi=150)
         plt.close(fig)
-        print("  Saved: plots/probability_distribution.png")
+        print("  Збережено: plots/probability_distribution.png")
 
     def _plot_shap(self, X_test: pd.DataFrame):
         try:
-            print("  Calculating SHAP values...")
+            print("  Обчислення SHAP-значень...")
             X_sample = X_test.head(500)
             explainer = shap.TreeExplainer(self.best_model)
             shap_values = explainer.shap_values(X_sample)
@@ -542,37 +587,56 @@ class ProfitabilityClassifier:
             plt.tight_layout()
             plt.savefig("plots/shap_summary.png", dpi=150, bbox_inches="tight")
             plt.close()
-            print("  Saved: plots/shap_summary.png")
+            print("  Збережено: plots/shap_summary.png")
 
             plt.figure(figsize=(10, 7))
             shap.summary_plot(shap_values, X_sample, plot_type="bar", show=False, max_display=15)
             plt.tight_layout()
             plt.savefig("plots/shap_bar.png", dpi=150, bbox_inches="tight")
             plt.close()
-            print("  Saved: plots/shap_bar.png")
+            print("  Збережено: plots/shap_bar.png")
         except Exception as exc:
-            print(f"  SHAP failed: {exc}")
+            print(f"  SHAP не вдалося виконати: {exc}")
 
-    def _save_metrics_report(self, metrics_summary: dict, cv_results, y_true, final_preds):
+    def _save_metrics_report(
+        self,
+        metrics_summary: dict,
+        baseline_metrics: dict,
+        cv_results,
+        y_true,
+        final_preds,
+    ):
         report_path = "plots/metrics_report.txt"
         lines = [
             "=" * 58,
             "Звіт про метрики класифікатора прибутковості",
             "=" * 58,
             "",
-            f"Точність (Accuracy)           : {metrics_summary['accuracy']:.4f}",
-            f"Збалансована точність         : {metrics_summary['balanced_accuracy']:.4f}",
-            f"ROC AUC                       : {metrics_summary['roc_auc']:.4f}",
-            f"Середня precision             : {metrics_summary['avg_precision']:.4f}",
-            f"MCC                           : {metrics_summary['mcc']:.4f}",
-            f"Коефіцієнт Каппа Коена        : {metrics_summary['cohen_kappa']:.4f}",
-            f"Brier Score                   : {metrics_summary['brier_score']:.4f}",
-            f"Оптимальний поріг             : {self.optimal_threshold:.2f}",
+            f"Точність (Accuracy)                        : {metrics_summary['accuracy']:.4f}",
+            f"Збалансована точність (Balanced Accuracy) : {metrics_summary['balanced_accuracy']:.4f}",
+            f"Площа під ROC-кривою (ROC AUC)            : {metrics_summary['roc_auc']:.4f}",
+            f"Середня точність (Average Precision)      : {metrics_summary['avg_precision']:.4f}",
+            f"Коефіцієнт Меттьюза (MCC)                 : {metrics_summary['mcc']:.4f}",
+            f"Коефіцієнт Каппа Коена (Cohen's Kappa)    : {metrics_summary['cohen_kappa']:.4f}",
+            f"Показник Браєра (Brier Score)             : {metrics_summary['brier_score']:.4f}",
+            f"Макро-F1 (Macro F1)                       : {metrics_summary['macro_f1']:.4f}",
+            f"Оптимальний поріг                         : {self.optimal_threshold:.2f}",
+            "",
+            "Наївний базовий рівень за часткою класу (тестова вибірка):",
+            f"  Частка прибуткових (Prevalence)               : {baseline_metrics['prevalence']:.4f}",
+            f"  Точність (Accuracy)                           : {baseline_metrics['accuracy']:.4f}",
+            f"  Збалансована точність (Balanced Accuracy)     : {baseline_metrics['balanced_accuracy']:.4f}",
+            f"  Площа під ROC-кривою (ROC AUC)                : {baseline_metrics['roc_auc']:.4f}",
+            f"  Середня точність (Average Precision)          : {baseline_metrics['avg_precision']:.4f}",
+            f"  Коефіцієнт Меттьюза (MCC)                     : {baseline_metrics['mcc']:.4f}",
+            f"  Коефіцієнт Каппа Коена (Cohen's Kappa)        : {baseline_metrics['cohen_kappa']:.4f}",
+            f"  Показник Браєра (Brier Score)                 : {baseline_metrics['brier_score']:.4f}",
+            f"  Макро-F1 (Macro F1)                           : {baseline_metrics['macro_f1']:.4f}",
             "",
             "Крос-валідація (5 фолдів на development-вибірці):",
-            f"  AUC : {cv_results['auc']['mean']:.4f} +/- {cv_results['auc']['std']:.4f}",
-            f"  Acc : {cv_results['acc']['mean']:.4f} +/- {cv_results['acc']['std']:.4f}",
-            f"  F1  : {cv_results['f1']['mean']:.4f} +/- {cv_results['f1']['std']:.4f}",
+            f"  Площа під ROC-кривою (ROC AUC) : {cv_results['auc']['mean']:.4f} +/- {cv_results['auc']['std']:.4f}",
+            f"  Точність (Accuracy)            : {cv_results['acc']['mean']:.4f} +/- {cv_results['acc']['std']:.4f}",
+            f"  Макро-F1                       : {cv_results['f1']['mean']:.4f} +/- {cv_results['f1']['std']:.4f}",
             "",
             "Класифікаційний звіт:",
             classification_report(
@@ -583,7 +647,7 @@ class ProfitabilityClassifier:
         ]
         with open(report_path, "w", encoding="utf-8") as file:
             file.write("\n".join(lines))
-        print(f"  Saved: {report_path}")
+        print(f"  Збережено: {report_path}")
 
 
 if __name__ == "__main__":
@@ -592,4 +656,4 @@ if __name__ == "__main__":
     if os.path.exists(ENRICHED_OUTPUT_PATH):
         ProfitabilityClassifier().train_evaluate(pd.read_csv(ENRICHED_OUTPUT_PATH, low_memory=False))
     else:
-        print(f"File not found: {ENRICHED_OUTPUT_PATH}\nRun the data pipeline first.")
+        print(f"Файл не знайдено: {ENRICHED_OUTPUT_PATH}\nСпочатку запустіть пайплайн обробки даних")

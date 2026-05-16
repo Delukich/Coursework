@@ -67,6 +67,38 @@ FEATURES_TO_KEEP = [
 
 DEFAULT_DISTANCE_KM = 5000.0
 DEFAULT_WEATHER = (15.0, 0.0)
+MARKET_COORDS_FALLBACK = {
+    'Africa': (7.0, 20.0),
+    'Europe': (50.0, 10.0),
+    'LATAM': (-15.0, -60.0),
+    'Pacific Asia': (15.0, 115.0),
+    'USCA': (39.0, -98.0),
+}
+REGION_COORDS_FALLBACK = {
+    'Canada': (56.0, -106.0),
+    'Caribbean': (18.0, -72.0),
+    'Central Africa': (2.0, 20.0),
+    'Central America': (15.0, -90.0),
+    'Central Asia': (43.0, 68.0),
+    'East Africa': (-3.0, 36.0),
+    'East of USA': (40.0, -75.0),
+    'Eastern Asia': (35.0, 120.0),
+    'Eastern Europe': (50.0, 25.0),
+    'North Africa': (27.0, 18.0),
+    'Northern Europe': (56.0, 10.0),
+    'Oceania': (-25.0, 135.0),
+    'South America': (-15.0, -60.0),
+    'South Asia': (20.0, 78.0),
+    'South of  USA': (32.0, -95.0),
+    'Southeast Asia': (10.0, 106.0),
+    'Southern Africa': (-22.0, 24.0),
+    'Southern Europe': (41.0, 15.0),
+    'US Center': (39.0, -98.0),
+    'West Africa': (10.0, -1.0),
+    'West Asia': (32.0, 45.0),
+    'West of USA': (36.0, -120.0),
+    'Western Europe': (48.0, 5.0),
+}
 
 
 class DataPipeline:
@@ -113,7 +145,7 @@ class DataPipeline:
 
     def _add_geo_features(self, df: pd.DataFrame) -> pd.DataFrame:
         print("[2/6] Геокодування пунктів призначення...")
-        unique_locs = df[['Order City', 'Order Country']].drop_duplicates()
+        unique_locs = df[['Order City', 'Order Country', 'Order Region', 'Market']].drop_duplicates()
         dest_coords = self._build_dest_coords(unique_locs)
         df = self._attach_dest_coords(df, dest_coords)
         df['Distance_KM'] = df.apply(
@@ -131,11 +163,28 @@ class DataPipeline:
     def _build_dest_coords(self, unique_locs: pd.DataFrame) -> dict:
         dest_coords: dict = {}
         for _, row in tqdm(unique_locs.iterrows(), total=len(unique_locs), desc="Geocoding"):
-            lat, lon = geocode_city(row['Order City'], row['Order Country'])
-            if np.isnan(lat) or np.isnan(lon):
-                lat, lon = COUNTRY_COORDS_FALLBACK.get(row['Order Country'], (np.nan, np.nan))
+            lat, lon = self._resolve_destination_coords(row)
             dest_coords[(row['Order City'], row['Order Country'])] = (lat, lon)
         return dest_coords
+
+    def _resolve_destination_coords(self, row: pd.Series) -> tuple[float, float]:
+        lat, lon = geocode_city(row['Order City'], row['Order Country'])
+        if not np.isnan(lat) and not np.isnan(lon):
+            return lat, lon
+
+        country = row.get('Order Country')
+        if country in COUNTRY_COORDS_FALLBACK:
+            return COUNTRY_COORDS_FALLBACK[country]
+
+        region = str(row.get('Order Region', '')).strip()
+        if region in REGION_COORDS_FALLBACK:
+            return REGION_COORDS_FALLBACK[region]
+
+        market = str(row.get('Market', '')).strip()
+        if market in MARKET_COORDS_FALLBACK:
+            return MARKET_COORDS_FALLBACK[market]
+
+        return np.nan, np.nan
 
     def _attach_dest_coords(self, df: pd.DataFrame, dest_coords: dict) -> pd.DataFrame:
         df['_dest_lat'] = df.apply(
@@ -164,11 +213,17 @@ class DataPipeline:
         return df
 
     def _get_weather_for_row(self, row: pd.Series) -> tuple:
-        if pd.isna(row['_dest_lat']) or pd.isna(row['_dest_lon']) or pd.isna(row['order_date']):
+        if pd.isna(row['order_date']):
             return DEFAULT_WEATHER
-        weather = self.weather_svc.get_real_weather(
-            row['_dest_lat'], row['_dest_lon'], row['order_date'].date()
-        )
+
+        lat = row['_dest_lat']
+        lon = row['_dest_lon']
+        if pd.isna(lat) or pd.isna(lon):
+            lat, lon = self._resolve_destination_coords(row)
+        if pd.isna(lat) or pd.isna(lon):
+            return DEFAULT_WEATHER
+
+        weather = self.weather_svc.get_real_weather(lat, lon, row['order_date'].date())
         return weather['temp'], weather['rain']
 
     def _add_econ_features(self, df: pd.DataFrame) -> tuple:
@@ -208,7 +263,7 @@ class DataPipeline:
         return df
 
     def _compute_target(self, df: pd.DataFrame, econ_map: dict) -> pd.DataFrame:
-        print("[5/6] Розрахунок реалістичної прибутковості (таргет)...")
+        print("[5/6] Розрахунок реалістичної прибутковості...")
 
         fuel_mult = df['Real_Fuel_Price'] / 60.0
         ship_mult = df['Shipping Mode'].map(SHIPPING_MODE_COST).fillna(1.0)

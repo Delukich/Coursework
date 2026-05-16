@@ -1,12 +1,11 @@
 .venv/
 .vs/
 .idea/
+.models/
 
 cache/
 __pycache__/
 *.pyc
-
-plots/
 
 data/
 models/*.pkl

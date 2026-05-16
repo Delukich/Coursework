@@ -29,10 +29,6 @@ warnings.filterwarnings("ignore")
 CURRENT_SCENARIO_YEAR = 2026
 
 
-def is_offline_mode() -> bool:
-    return os.getenv("LOGISTICS_OFFLINE", "1").strip().lower() not in {"0", "false", "no"}
-
-
 MARKET_BY_COUNTRY = {
     "USA": "USCA",
     "Canada": "USCA",
@@ -123,7 +119,7 @@ def load_artifacts():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
             f"Модель не знайдена: {MODEL_PATH}\n"
-            "Спочатку виконайте опцію 1 (папелаплаін) – опцію 2 (навчання)."
+            "Спочатку виконайте опцію 1 (пайплайн) – опцію 2 (навчання)"
         )
     if not os.path.exists(FEATURE_META_PATH):
         raise FileNotFoundError(f"Метадані моделі не знайдені: {FEATURE_META_PATH}")
@@ -239,15 +235,16 @@ def build_input_row(
     store_lat: float,
     store_lon: float,
     sched_days: int,
+    force_live: bool = False,
 ):
     now = datetime.now()
     resolved_country = normalize_country_name(country)
     stats = econ_svc.get_country_stats(resolved_country, year=CURRENT_SCENARIO_YEAR)
     fuel_price = econ_svc.get_fuel_price(CURRENT_SCENARIO_YEAR, now.month)
 
-    dest_lat, dest_lon = _resolve_destination_coords(resolved_country, city)
+    dest_lat, dest_lon = _resolve_destination_coords(resolved_country, city, force_live=force_live)
     dist_km = _resolve_distance_km(store_lat, store_lon, dest_lat, dest_lon)
-    temp_c, rain_mm = _resolve_weather(weather_svc, dest_lat, dest_lon, now)
+    temp_c, rain_mm = _resolve_weather(weather_svc, dest_lat, dest_lon, now, force_live=force_live)
     order_item_total = _calc_order_total(price, qty, discount_rate)
     total_penalty, distance_penalty, weather_penalty, tariff_penalty = _calc_penalties(
         econ_svc,
@@ -334,12 +331,12 @@ def build_input_row(
     return pd.DataFrame([input_dict]), ctx
 
 
-def _resolve_destination_coords(country: str, city: str):
-    dest_lat, dest_lon = geocode_city(city, country)
+def _resolve_destination_coords(country: str, city: str, force_live: bool = False):
+    dest_lat, dest_lon = geocode_city(city, country, force_live=force_live)
     if np.isnan(dest_lat) or np.isnan(dest_lon):
         dest_lat, dest_lon = COUNTRY_COORDS_FALLBACK.get(country, (np.nan, np.nan))
         if np.isnan(dest_lat):
-            print(f"  Попередження: координати для {city}, {country} не знайдено. Використовую (0, 0).")
+            print(f"  Попередження: координати для {city}, {country} не знайдено. Використано (0, 0)")
             dest_lat, dest_lon = 0.0, 0.0
     return dest_lat, dest_lon
 
@@ -349,8 +346,14 @@ def _resolve_distance_km(store_lat: float, store_lon: float, dest_lat: float, de
     return 5000.0 if np.isnan(dist_km) else dist_km
 
 
-def _resolve_weather(weather_svc: WeatherService, dest_lat: float, dest_lon: float, now: datetime):
-    weather = weather_svc.get_real_weather(dest_lat, dest_lon, now.date())
+def _resolve_weather(
+    weather_svc: WeatherService,
+    dest_lat: float,
+    dest_lon: float,
+    now: datetime,
+    force_live: bool = False,
+):
+    weather = weather_svc.get_real_weather(dest_lat, dest_lon, now.date(), force_live=force_live)
     temp_c = weather["temp"] if not np.isnan(weather["temp"]) else 15.0
     rain_mm = weather["rain"] if not np.isnan(weather["rain"]) else 0.0
     return temp_c, rain_mm
@@ -456,16 +459,11 @@ def main():
     weather_svc = WeatherService()
 
     def show_menu():
-        print("\n" + "=" * 55)
-        print("  LOGISTICS DECISION SUPPORT SYSTEM v3.2")
-        print("  Оцінка ризику прибутковості доставки")
-        print("=" * 55)
+        print()
         print("  1. Запустити пайплайн даних")
         print("  2. Навчити модель")
         print("  3. Ручна оцінка прибутковості")
         print("  0. Вихід")
-        print("=" * 55)
-        print(f"  Режим даних: {'Offline demo mode' if is_offline_mode() else 'Online API mode'}")
         print("=" * 55)
 
     def run_pipeline_option():
@@ -477,17 +475,17 @@ def main():
         except FileNotFoundError as exc:
             print(f"Помилка: {exc}")
         except Exception as exc:
-            print(f"Помилка папелайну: {exc}")
+            print(f"Помилка пайплайну: {exc}")
 
     def run_training_option():
         if not os.path.exists(ENRICHED_OUTPUT_PATH):
-            print(f"Помилка: файл {ENRICHED_OUTPUT_PATH} не знайдено. Спочатку виконайте опцію 1.")
+            print(f"Помилка: файл {ENRICHED_OUTPUT_PATH} не знайдено. Спочатку виконайте опцію 1")
             return
         try:
             from src.train_model import ProfitabilityClassifier
 
             df = pd.read_csv(ENRICHED_OUTPUT_PATH, encoding="utf-8", low_memory=False)
-            print(f"Завантажено {len(df):,} рядків для навчання.")
+            print(f"Завантажено {len(df):,} рядків для навчання")
             ProfitabilityClassifier().train_evaluate(df)
         except Exception as exc:
             print(f"Помилка навчання: {exc}")
@@ -510,7 +508,7 @@ def main():
             print("Методи: Standard Class | Second Class | First Class | Same Day")
             shipping_mode = input("Метод доставки [default Standard Class]: ").strip() or "Standard Class"
             if shipping_mode not in SHIPPING_MODE_COST:
-                print("  Невідомий метод, використовую Standard Class.")
+                print("  Невідомий метод, використовую Standard Class")
                 shipping_mode = "Standard Class"
 
             sched_days = get_int_input("Плановий термін доставки, днів (default 4): ", 4)
@@ -519,10 +517,10 @@ def main():
             price = get_float_input("Ціна за одиницю, USD (default 500.0): ", 500.0, 0.01)
             discount_rate = get_float_input("Знижка від 0 до 1 (default 0.1): ", 0.1, 0.0, 1.0)
         except (KeyboardInterrupt, EOFError):
-            print("\nСкасовано.")
+            print("\nСкасовано")
             return
 
-        print("\nРозраховую...")
+        print("\nРозрахунок...")
         try:
             df_input, ctx = build_input_row(
                 econ_svc,
@@ -537,6 +535,7 @@ def main():
                 store_lat,
                 store_lon,
                 sched_days,
+                force_live=True,
             )
             is_profitable, prob_profit, thresh = predict_profitability(df_input, artifacts)
         except Exception as exc:
@@ -548,20 +547,20 @@ def main():
 
         print("\n" + "-" * 65)
         print(f"  Маршрут          : Склад -> {ctx['city']}, {ctx['country']}")
-        print(f"  Регіон / ринок   : {ctx['region']} / {ctx['market']}")
+        print(f"  Регіон/ринок     : {ctx['region']} / {ctx['market']}")
         print(f"  Відстань         : {ctx['dist_km']:,.0f} км")
         print(f"  Сума замовлення  : ${ctx['order_item_total']:,.2f}")
-        print(f"  Паливо (Brent)   : ${ctx['fuel_price']:.1f}/bbl")
+        print(f"  Паливо           : ${ctx['fuel_price']:.1f}/bbl")
         print(f"  Температура/дощ  : {ctx['temp_c']:.1f} C / {ctx['rain_mm']:.1f} мм")
         print("-" * 65)
-        print(f"  Логістика -$     : {ctx['distance_penalty']:,.2f}")
-        print(f"  Погода   -$      : {ctx['weather_penalty']:,.2f}")
-        print(f"  Мито     -$      : {ctx['tariff_penalty']:,.2f}")
-        print(f"  Разом витрат     : -${ctx['total_penalty']:,.2f}")
+        print(f"  Логістична оцінка -$ : {ctx['distance_penalty']:,.2f}")
+        print(f"  Погодні ризики -$    : {ctx['weather_penalty']:,.2f}")
+        print(f"  Торгова оцінка -$    : {ctx['tariff_penalty']:,.2f}")
+        print(f"  Разом оцін. знижень  : -${ctx['total_penalty']:,.2f}")
         print("-" * 65)
         print(f"  ВЕРДИКТ          : {status}")
         print(f"  Ймовірність      : {prob_profit:.1f}% (поріг: {thresh:.1f}%)")
-        print("  Note             : Оцінка для підтримки рішення, не гарантія прибутку")
+        print(f"  Note             : Оціночні знижки для підтримки рішення, не фактичні витрати і не гарантія прибутку")
         print("-" * 65 + "\n")
 
     while True:
@@ -579,10 +578,10 @@ def main():
             run_manual_assessment()
 
         elif choice == "0":
-            print("До побачення.")
+            print("До побачення")
             break
         else:
-            print("Невідома опція. Введіть число від 0 до 3.")
+            print("Невідома опція. Введіть число від 0 до 3")
 
 
 if __name__ == "__main__":

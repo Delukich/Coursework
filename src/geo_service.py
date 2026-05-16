@@ -11,7 +11,7 @@ import requests
 from src.config import (
     CACHE_DIR,
     COUNTRY_COORDS_FALLBACK,
-    NOMINATIM_USER_AGENT,
+    GEOCODING_USER_AGENT,
     OFFLINE,
     normalize_country_name,
 )
@@ -47,10 +47,16 @@ def _fallback_coords(country: str) -> Tuple[float, float]:
     return COUNTRY_COORDS_FALLBACK.get(country, (np.nan, np.nan))
 
 
+def _coords_match(a: Tuple[float, float], b: Tuple[float, float], tol: float = 1e-4) -> bool:
+    if any(np.isnan(x) for x in [a[0], a[1], b[0], b[1]]):
+        return False
+    return abs(float(a[0]) - float(b[0])) <= tol and abs(float(a[1]) - float(b[1])) <= tol
+
+
 def _query_nominatim(city: str, country: str) -> Tuple[float, float]:
     url = "https://nominatim.openstreetmap.org/search"
     params = {"city": city, "country": country, "format": "json", "limit": 1}
-    headers = {"User-Agent": NOMINATIM_USER_AGENT}
+    headers = {"User-Agent": GEOCODING_USER_AGENT}
     try:
         sleep(1)
         response = requests.get(url, params=params, headers=headers, timeout=10)
@@ -64,20 +70,28 @@ def _query_nominatim(city: str, country: str) -> Tuple[float, float]:
 
 
 @lru_cache(maxsize=20000)
-def geocode_city(city: str, country: str) -> Tuple[float, float]:
+def geocode_city(city: str, country: str, force_live: bool = False) -> Tuple[float, float]:
     if not city or not country:
         return np.nan, np.nan
 
     normalized_country = normalize_country_name(country)
     key = f"{city.strip().lower()}|{normalized_country.strip().lower()}"
+    fallback_coords = _fallback_coords(normalized_country)
+
     if key in geocode_cache:
         lat, lon = geocode_cache[key]
-        return float(lat), float(lon)
+        cached_coords = (float(lat), float(lon))
+        # In manual mode we may want to replace coarse country-level cache entries
+        # with exact city coordinates when network access is available.
+        if not force_live or not _coords_match(cached_coords, fallback_coords):
+            return cached_coords
 
-    if OFFLINE:
+    if OFFLINE and not force_live:
         lat, lon = _fallback_coords(normalized_country)
     else:
         lat, lon = _query_nominatim(city, normalized_country)
+        if any(np.isnan(x) for x in [lat, lon]):
+            lat, lon = fallback_coords
 
     geocode_cache[key] = (lat, lon)
     save_geocode_cache(geocode_cache)

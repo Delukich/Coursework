@@ -1,5 +1,4 @@
 import os
-
 import pycountry
 from fuzzywuzzy import process
 
@@ -19,7 +18,7 @@ ENRICHED_OUTPUT_PATH = os.path.join(DATA_DIR, 'enriched_dataset.csv')
 MODEL_PATH = os.path.join(MODELS_DIR, 'xgboost_profit_classifier.joblib')
 FEATURE_META_PATH = os.path.join(MODELS_DIR, 'feature_meta.joblib')
 
-NOMINATIM_USER_AGENT = "LogisticsProfitPredictor/1.0 (coursework project contact)"
+GEOCODING_USER_AGENT = "CourseworkGeocoder/1.0"
 
 CATEGORICAL_COLUMNS_USED = [
     'Type', 'Shipping Mode', 'Category Name', 'Order Region',

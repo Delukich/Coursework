@@ -45,7 +45,7 @@ class WeatherService:
     API_URL = "https://archive-api.open-meteo.com/v1/archive"
     FALLBACK = {'temp': 15.0, 'rain': 0.0}
 
-    def get_real_weather(self, lat: float, lon: float, date_obj: date) -> Dict[str, float]:
+    def get_real_weather(self, lat: float, lon: float, date_obj: date, force_live: bool = False) -> Dict[str, float]:
         if np.isnan(lat) or np.isnan(lon):
             return self.FALLBACK.copy()
 
@@ -53,20 +53,26 @@ class WeatherService:
 
         if key in weather_cache:
             cached = weather_cache[key]
-            if OFFLINE and cached == self.FALLBACK:
+            if force_live and cached == self.FALLBACK:
+                cached = self._fetch_from_api(lat, lon, date_obj)
+                if cached == self.FALLBACK:
+                    cached = self._estimate_climate(lat, date_obj)
+                weather_cache[key] = cached
+                save_weather_cache(weather_cache)
+            elif OFFLINE and cached == self.FALLBACK:
                 cached = self._estimate_climate(lat, date_obj)
                 weather_cache[key] = cached
                 save_weather_cache(weather_cache)
             return cached
 
-        result = self._get_weather_result(lat, lon, date_obj)
+        result = self._get_weather_result(lat, lon, date_obj, force_live=force_live)
 
         weather_cache[key] = result
         save_weather_cache(weather_cache)
         return result
 
-    def _get_weather_result(self, lat: float, lon: float, date_obj: date) -> Dict[str, float]:
-        if OFFLINE:
+    def _get_weather_result(self, lat: float, lon: float, date_obj: date, force_live: bool = False) -> Dict[str, float]:
+        if OFFLINE and not force_live:
             return self._estimate_climate(lat, date_obj)
         return self._fetch_from_api(lat, lon, date_obj)
 
