@@ -118,11 +118,11 @@ DEPARTMENT_KEYWORDS = (
 def load_artifacts():
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
-            f"Модель не знайдена: {MODEL_PATH}\n"
-            "Спочатку виконайте опцію 1 (пайплайн) – опцію 2 (навчання)"
+            f"Model not found: {MODEL_PATH}\n"
+            "Run option 1 (data pipeline) and then option 2 (model training) first."
         )
     if not os.path.exists(FEATURE_META_PATH):
-        raise FileNotFoundError(f"Метадані моделі не знайдені: {FEATURE_META_PATH}")
+        raise FileNotFoundError(f"Model metadata not found: {FEATURE_META_PATH}")
 
     model = joblib.load(MODEL_PATH)
     feature_meta = joblib.load(FEATURE_META_PATH)
@@ -336,7 +336,7 @@ def _resolve_destination_coords(country: str, city: str, force_live: bool = Fals
     if np.isnan(dest_lat) or np.isnan(dest_lon):
         dest_lat, dest_lon = COUNTRY_COORDS_FALLBACK.get(country, (np.nan, np.nan))
         if np.isnan(dest_lat):
-            print(f"  Попередження: координати для {city}, {country} не знайдено. Використано (0, 0)")
+            print(f"  Warning: coordinates for {city}, {country} were not found. Using (0, 0).")
             dest_lat, dest_lon = 0.0, 0.0
     return dest_lat, dest_lon
 
@@ -431,14 +431,14 @@ def get_float_input(prompt: str, default: float, min_val: float = None, max_val:
         try:
             val = float(raw)
             if min_val is not None and val < min_val:
-                print(f"  Мінімальне значення: {min_val}")
+                print(f"  Minimum value: {min_val}")
                 continue
             if max_val is not None and val > max_val:
-                print(f"  Максимальне значення: {max_val}")
+                print(f"  Maximum value: {max_val}")
                 continue
             return val
         except ValueError:
-            print(f"  Введіть числове значення, наприклад: {default}")
+            print(f"  Enter a numeric value, for example: {default}")
 
 
 def get_int_input(prompt: str, default: int, min_val: int = 1) -> int:
@@ -447,11 +447,11 @@ def get_int_input(prompt: str, default: int, min_val: int = 1) -> int:
         try:
             val = int(raw)
             if val < min_val:
-                print(f"  Мінімальне значення: {min_val}")
+                print(f"  Minimum value: {min_val}")
                 continue
             return val
         except ValueError:
-            print(f"  Введіть ціле число, наприклад: {default}")
+            print(f"  Enter an integer value, for example: {default}")
 
 
 def main():
@@ -460,67 +460,67 @@ def main():
 
     def show_menu():
         print()
-        print("  1. Запустити пайплайн даних")
-        print("  2. Навчити модель")
-        print("  3. Ручна оцінка прибутковості")
-        print("  0. Вихід")
+        print("  1. Run data pipeline")
+        print("  2. Train model")
+        print("  3. Manual logistics efficiency assessment")
+        print("  0. Exit")
         print("=" * 55)
 
     def run_pipeline_option():
-        limit_raw = input("Ліміт рядків (Enter = всі, рекомендовано 1000 для тесту): ").strip()
+        limit_raw = input("Row limit (Enter = all, 1000 is recommended for a quick test): ").strip()
         limit = int(limit_raw) if limit_raw.isdigit() else None
-        print(f"\nОбробка {'всього датасету' if not limit else f'перших {limit} рядків'}...")
+        print(f"\nProcessing {'the full dataset' if not limit else f'the first {limit} rows'}...")
         try:
             DataPipeline(mode="train", limit=limit).run()
         except FileNotFoundError as exc:
-            print(f"Помилка: {exc}")
+            print(f"Error: {exc}")
         except Exception as exc:
-            print(f"Помилка пайплайну: {exc}")
+            print(f"Pipeline error: {exc}")
 
     def run_training_option():
         if not os.path.exists(ENRICHED_OUTPUT_PATH):
-            print(f"Помилка: файл {ENRICHED_OUTPUT_PATH} не знайдено. Спочатку виконайте опцію 1")
+            print(f"Error: file {ENRICHED_OUTPUT_PATH} was not found. Run option 1 first.")
             return
         try:
             from src.train_model import ProfitabilityClassifier
 
             df = pd.read_csv(ENRICHED_OUTPUT_PATH, encoding="utf-8", low_memory=False)
-            print(f"Завантажено {len(df):,} рядків для навчання")
+            print(f"Loaded {len(df):,} rows for training")
             ProfitabilityClassifier().train_evaluate(df)
         except Exception as exc:
-            print(f"Помилка навчання: {exc}")
+            print(f"Training error: {exc}")
             traceback.print_exc()
 
     def run_manual_assessment():
         try:
             artifacts = load_artifacts()
         except FileNotFoundError as exc:
-            print(f"Помилка: {exc}")
+            print(f"Error: {exc}")
             return
 
-        print("\nПараметри доставки")
+        print("\nDelivery parameters")
         try:
-            store_lat = get_float_input("Широта складу (default 40.71): ", 40.71, -90, 90)
-            store_lon = get_float_input("Довгота складу (default -74.00): ", -74.00, -180, 180)
-            country = input("Країна доставки (default France): ").strip() or "France"
-            city = input("Місто доставки (default Paris): ").strip() or "Paris"
+            store_lat = get_float_input("Warehouse latitude (default 40.71): ", 40.71, -90, 90)
+            store_lon = get_float_input("Warehouse longitude (default -74.00): ", -74.00, -180, 180)
+            country = input("Destination country (default France): ").strip() or "France"
+            city = input("Destination city (default Paris): ").strip() or "Paris"
 
-            print("Методи: Standard Class | Second Class | First Class | Same Day")
-            shipping_mode = input("Метод доставки [default Standard Class]: ").strip() or "Standard Class"
+            print("Shipping modes: Standard Class | Second Class | First Class | Same Day")
+            shipping_mode = input("Shipping mode [default Standard Class]: ").strip() or "Standard Class"
             if shipping_mode not in SHIPPING_MODE_COST:
-                print("  Невідомий метод, використовую Standard Class")
+                print("  Unknown shipping mode. Using Standard Class.")
                 shipping_mode = "Standard Class"
 
-            sched_days = get_int_input("Плановий термін доставки, днів (default 4): ", 4)
-            category = input("Категорія товару (default Electronics): ").strip() or "Electronics"
-            qty = get_int_input("Кількість одиниць (default 1): ", 1)
-            price = get_float_input("Ціна за одиницю, USD (default 500.0): ", 500.0, 0.01)
-            discount_rate = get_float_input("Знижка від 0 до 1 (default 0.1): ", 0.1, 0.0, 1.0)
+            sched_days = get_int_input("Scheduled delivery time, days (default 4): ", 4)
+            category = input("Product category (default Electronics): ").strip() or "Electronics"
+            qty = get_int_input("Quantity (default 1): ", 1)
+            price = get_float_input("Unit price, USD (default 500.0): ", 500.0, 0.01)
+            discount_rate = get_float_input("Discount from 0 to 1 (default 0.1): ", 0.1, 0.0, 1.0)
         except (KeyboardInterrupt, EOFError):
-            print("\nСкасовано")
+            print("\nCancelled")
             return
 
-        print("\nРозрахунок...")
+        print("\nCalculating...")
         try:
             df_input, ctx = build_input_row(
                 econ_svc,
@@ -539,34 +539,34 @@ def main():
             )
             is_profitable, prob_profit, thresh = predict_profitability(df_input, artifacts)
         except Exception as exc:
-            print(f"Помилка передбачення: {exc}")
+            print(f"Prediction error: {exc}")
             traceback.print_exc()
             return
 
-        status = "ПРИБУТКОВО" if is_profitable else "ЗБИТКОВО (РИЗИК)"
+        status = "EFFICIENT / PROFITABLE" if is_profitable else "RISKY / LOSS-MAKING"
 
         print("\n" + "-" * 65)
-        print(f"  Маршрут          : Склад -> {ctx['city']}, {ctx['country']}")
-        print(f"  Регіон/ринок     : {ctx['region']} / {ctx['market']}")
-        print(f"  Відстань         : {ctx['dist_km']:,.0f} км")
-        print(f"  Сума замовлення  : ${ctx['order_item_total']:,.2f}")
-        print(f"  Паливо           : ${ctx['fuel_price']:.1f}/bbl")
-        print(f"  Температура/дощ  : {ctx['temp_c']:.1f} C / {ctx['rain_mm']:.1f} мм")
+        print(f"  Route              : Warehouse -> {ctx['city']}, {ctx['country']}")
+        print(f"  Region / market    : {ctx['region']} / {ctx['market']}")
+        print(f"  Distance           : {ctx['dist_km']:,.0f} km")
+        print(f"  Order total        : ${ctx['order_item_total']:,.2f}")
+        print(f"  Fuel price         : ${ctx['fuel_price']:.1f}/bbl")
+        print(f"  Temperature / rain : {ctx['temp_c']:.1f} C / {ctx['rain_mm']:.1f} mm")
         print("-" * 65)
-        print(f"  Логістична оцінка -$ : {ctx['distance_penalty']:,.2f}")
-        print(f"  Погодні ризики -$    : {ctx['weather_penalty']:,.2f}")
-        print(f"  Торгова оцінка -$    : {ctx['tariff_penalty']:,.2f}")
-        print(f"  Разом оцін. знижень  : -${ctx['total_penalty']:,.2f}")
+        print(f"  Distance penalty  -$ : {ctx['distance_penalty']:,.2f}")
+        print(f"  Weather penalty   -$ : {ctx['weather_penalty']:,.2f}")
+        print(f"  Tariff penalty    -$ : {ctx['tariff_penalty']:,.2f}")
+        print(f"  Total penalties      : -${ctx['total_penalty']:,.2f}")
         print("-" * 65)
-        print(f"  ВЕРДИКТ          : {status}")
-        print(f"  Ймовірність      : {prob_profit:.1f}% (поріг: {thresh:.1f}%)")
-        print(f"  Note             : Оціночні знижки для підтримки рішення, не фактичні витрати і не гарантія прибутку")
+        print(f"  VERDICT            : {status}")
+        print(f"  Probability        : {prob_profit:.1f}% (threshold: {thresh:.1f}%)")
+        print("  Note               : Penalties are analytical estimates for decision support, not actual costs or a profit guarantee.")
         print("-" * 65 + "\n")
 
     while True:
         show_menu()
 
-        choice = input("Оберіть опцію (0-3): ").strip()
+        choice = input("Choose an option (0-3): ").strip()
 
         if choice == "1":
             run_pipeline_option()
@@ -578,10 +578,10 @@ def main():
             run_manual_assessment()
 
         elif choice == "0":
-            print("До побачення")
+            print("Goodbye")
             break
         else:
-            print("Невідома опція. Введіть число від 0 до 3")
+            print("Unknown option. Enter a number from 0 to 3.")
 
 
 if __name__ == "__main__":

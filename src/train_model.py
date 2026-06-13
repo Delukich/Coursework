@@ -111,7 +111,7 @@ class ProfitabilityClassifier:
         prepared = df.copy()
         obj_cols = prepared.select_dtypes(include=["object"]).columns.tolist()
         if obj_cols:
-            print(f"  Видалено непідтримувані стовпці типу object: {obj_cols}")
+            print(f"  Removed unsupported object columns: {obj_cols}")
             prepared = prepared.drop(columns=obj_cols)
         return prepared
 
@@ -128,10 +128,10 @@ class ProfitabilityClassifier:
         return prepared
 
     def prepare_datasets(self, df: pd.DataFrame) -> dict[str, pd.DataFrame | pd.Series]:
-        print("\n[1/5] Підготовка даних для XGBoost...")
+        print("\n[1/5] Preparing data for XGBoost...")
 
         if "Is_Profitable" not in df.columns:
-            raise ValueError("Стовпець 'Is_Profitable' відсутній. Спочатку запустіть пайплайн даних")
+            raise ValueError("Column 'Is_Profitable' is missing. Run the data pipeline first.")
 
         prepared = self._cast_categorical_columns(df)
         prepared = self._drop_remaining_object_columns(prepared)
@@ -141,8 +141,8 @@ class ProfitabilityClassifier:
 
         balance = y.value_counts(normalize=True)
         print(
-            f"  Баланс класів: прибуткові={balance.get(1, 0):.1%} | "
-            f"збиткові={balance.get(0, 0):.1%}"
+            f"  Class balance: profitable={balance.get(1, 0):.1%} | "
+            f"loss-making={balance.get(0, 0):.1%}"
         )
 
         (
@@ -164,7 +164,7 @@ class ProfitabilityClassifier:
         X_dev = self._fill_numeric_missing(X_dev, self.medians)
 
         print(
-            f"  Навчання: {len(X_train):,} | Валідація: {len(X_val):,} | Тест: {len(X_test):,}"
+            f"  Train: {len(X_train):,} | Validation: {len(X_val):,} | Test: {len(X_test):,}"
         )
 
         return {
@@ -188,7 +188,7 @@ class ProfitabilityClassifier:
         return X_train, X_val, X_test, X_dev, y_train, y_val, y_test, y_dev
 
     def cross_validate(self, X: pd.DataFrame, y: pd.Series, params: dict | None = None) -> dict:
-        print("\n[2/5] Запуск StratifiedKFold CV (5 фолдів)...")
+        print("\n[2/5] Running StratifiedKFold CV (5 folds)...")
 
         cv_params = self.DEFAULT_XGB_PARAMS.copy()
         if params:
@@ -222,7 +222,7 @@ class ProfitabilityClassifier:
             fold_metrics["f1"].append(f1)
             print(f"  Fold {fold}: AUC={auc:.4f} | Acc={acc:.4f} | F1={f1:.4f}")
 
-        print("\n  Підсумок CV:")
+        print("\n  CV summary:")
         for metric, values in fold_metrics.items():
             print(f"    {metric.upper()}: {np.mean(values):.4f} +/- {np.std(values):.4f}")
 
@@ -239,10 +239,10 @@ class ProfitabilityClassifier:
         y_val: pd.Series,
     ) -> dict:
         if not OPTUNA_AVAILABLE:
-            print("\n[3/5] Optuna не встановлено. Використовуються стандартні параметри XGBoost")
+            print("\n[3/5] Optuna is not installed. Using default XGBoost parameters.")
             return self.DEFAULT_XGB_PARAMS.copy()
 
-        print("\n[3/5] Пошук гіперпараметрів через Optuna...")
+        print("\n[3/5] Searching hyperparameters with Optuna...")
 
         def objective(trial):
             params = {
@@ -270,7 +270,7 @@ class ProfitabilityClassifier:
         study.optimize(objective, n_trials=50, timeout=300, show_progress_bar=False)
 
         print(
-            f"  Найкращий validation ROC-AUC: {study.best_value:.4f} "
+            f"  Best validation ROC-AUC: {study.best_value:.4f} "
             f"(trial #{study.best_trial.number})"
         )
 
@@ -290,7 +290,7 @@ class ProfitabilityClassifier:
                 best_threshold = float(threshold)
 
         print(
-            f"  Обраний поріг за validation split: "
+            f"  Selected threshold on validation split: "
             f"{best_threshold:.2f} (macro F1={best_f1:.4f})"
         )
         return best_threshold
@@ -360,7 +360,7 @@ class ProfitabilityClassifier:
         if SHAP_AVAILABLE:
             self._plot_shap(X_test)
         else:
-            print("  SHAP не встановлено. Побудову SHAP-графіків пропущено")
+            print("  SHAP is not installed. SHAP plots were skipped.")
 
         metrics_summary = {
             "accuracy": acc,
@@ -376,7 +376,7 @@ class ProfitabilityClassifier:
         self._save_artifacts(metrics_summary, baseline_metrics, cv_results)
 
     def _train_for_threshold(self, X_train, y_train, X_val, y_val, best_params):
-        print("\n[4/5] Навчання фінальної моделі на train + validation...")
+        print("\n[4/5] Training the threshold model on train + validation...")
         validation_model = xgb.XGBClassifier(**best_params)
         validation_model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         val_proba = validation_model.predict_proba(X_val)[:, 1]
@@ -386,7 +386,7 @@ class ProfitabilityClassifier:
     def _train_final_model(self, X_dev, y_dev, X_test, y_test, best_params):
         self.best_model = xgb.XGBClassifier(**best_params)
         self.best_model.fit(X_dev, y_dev, verbose=False)
-        print("\n[5/5] Оцінка на відкладеній тестовій вибірці...")
+        print("\n[5/5] Evaluating on the held-out test set...")
         test_proba = self.best_model.predict_proba(X_test)[:, 1]
         final_preds = (test_proba >= self.optimal_threshold).astype(int)
         return test_proba, final_preds
@@ -430,8 +430,8 @@ class ProfitabilityClassifier:
             },
             FEATURE_META_PATH,
         )
-        print(f"\nМодель збережено у: {MODEL_PATH}")
-        print(f"Метадані збережено у: {FEATURE_META_PATH}")
+        print(f"\nModel saved to: {MODEL_PATH}")
+        print(f"Metadata saved to: {FEATURE_META_PATH}")
 
     def _plot_confusion_matrix(self, y_true, preds):
         cm = confusion_matrix(y_true, preds)
@@ -441,44 +441,44 @@ class ProfitabilityClassifier:
             annot=True,
             fmt="d",
             cmap="Blues",
-            xticklabels=["Збиткове", "Прибуткове"],
-            yticklabels=["Збиткове", "Прибуткове"],
+            xticklabels=["Loss-making", "Profitable"],
+            yticklabels=["Loss-making", "Profitable"],
             ax=ax,
         )
-        ax.set_title(f"Матриця помилок (поріг={self.optimal_threshold:.2f})")
-        ax.set_ylabel("Фактичний клас")
-        ax.set_xlabel("Прогнозований клас")
+        ax.set_title(f"Confusion Matrix (threshold={self.optimal_threshold:.2f})")
+        ax.set_ylabel("Actual class")
+        ax.set_xlabel("Predicted class")
         fig.tight_layout()
         fig.savefig("plots/confusion_matrix.png", dpi=150)
         plt.close(fig)
-        print("  Збережено: plots/confusion_matrix.png")
+        print("  Saved: plots/confusion_matrix.png")
 
     def _plot_roc_curve(self, y_true, preds_proba, roc_score):
         fpr, tpr, _ = roc_curve(y_true, preds_proba)
         fig, ax = plt.subplots(figsize=(7, 6))
         ax.plot(fpr, tpr, color="navy", lw=2, label=f"ROC AUC = {roc_score:.3f}")
         ax.plot([0, 1], [0, 1], color="gray", linestyle="--", lw=1)
-        ax.set_xlabel("Частка хибнопозитивних")
-        ax.set_ylabel("Частка істиннопозитивних")
-        ax.set_title("ROC-крива")
+        ax.set_xlabel("False positive rate")
+        ax.set_ylabel("True positive rate")
+        ax.set_title("ROC Curve")
         ax.legend()
         fig.tight_layout()
         fig.savefig("plots/roc_curve.png", dpi=150)
         plt.close(fig)
-        print("  Збережено: plots/roc_curve.png")
+        print("  Saved: plots/roc_curve.png")
 
     def _plot_precision_recall(self, y_true, preds_proba, ap_score):
         precision, recall, _ = precision_recall_curve(y_true, preds_proba)
         fig, ax = plt.subplots(figsize=(7, 6))
-        ax.plot(recall, precision, color="darkorange", lw=2, label=f"Середня precision = {ap_score:.3f}")
-        ax.set_xlabel("Повнота (Recall)")
-        ax.set_ylabel("Точність (Precision)")
-        ax.set_title("Крива Precision-Recall")
+        ax.plot(recall, precision, color="darkorange", lw=2, label=f"Average precision = {ap_score:.3f}")
+        ax.set_xlabel("Recall")
+        ax.set_ylabel("Precision")
+        ax.set_title("Precision-Recall Curve")
         ax.legend()
         fig.tight_layout()
         fig.savefig("plots/precision_recall.png", dpi=150)
         plt.close(fig)
-        print("  Збережено: plots/precision_recall.png")
+        print("  Saved: plots/precision_recall.png")
 
     def _plot_feature_importance(self):
         fig, axes = plt.subplots(1, 2, figsize=(16, 8))
@@ -488,12 +488,12 @@ class ProfitabilityClassifier:
                 importance_type=importance_type,
                 max_num_features=15,
                 ax=ax,
-                title=f"Важливість ознак ({importance_type})",
+                title=f"Feature Importance ({importance_type})",
             )
         fig.tight_layout()
         fig.savefig("plots/feature_importance.png", dpi=150)
         plt.close(fig)
-        print("  Збережено: plots/feature_importance.png")
+        print("  Saved: plots/feature_importance.png")
 
     def _plot_threshold_search(self, y_true, preds_proba):
         thresholds = np.arange(0.05, 0.95, 0.01)
@@ -507,44 +507,44 @@ class ProfitabilityClassifier:
 
         fig, ax = plt.subplots(figsize=(9, 5))
         ax.plot(thresholds, f1_scores, label="F1 (macro)", lw=2)
-        ax.plot(thresholds, precisions, label="Точність", lw=1.5, linestyle="--")
-        ax.plot(thresholds, recalls, label="Повнота", lw=1.5, linestyle=":")
+        ax.plot(thresholds, precisions, label="Precision", lw=1.5, linestyle="--")
+        ax.plot(thresholds, recalls, label="Recall", lw=1.5, linestyle=":")
         ax.axvline(
             self.optimal_threshold,
             color="red",
             linestyle="-",
             lw=1.5,
-            label=f"Оптимум={self.optimal_threshold:.2f}",
+            label=f"Optimal={self.optimal_threshold:.2f}",
         )
-        ax.set_xlabel("Поріг класифікації")
-        ax.set_ylabel("Значення метрики")
-        ax.set_title("Метрики на валідації залежно від порогу")
+        ax.set_xlabel("Classification threshold")
+        ax.set_ylabel("Metric value")
+        ax.set_title("Validation Metrics by Threshold")
         ax.legend()
         fig.tight_layout()
         fig.savefig("plots/threshold_search.png", dpi=150)
         plt.close(fig)
-        print("  Збережено: plots/threshold_search.png")
+        print("  Saved: plots/threshold_search.png")
 
     def _plot_calibration_curve(self, y_true, preds_proba):
         frac_pos, mean_pred = calibration_curve(y_true, preds_proba, n_bins=10, strategy="quantile")
         fig, ax = plt.subplots(figsize=(7, 6))
-        ax.plot(mean_pred, frac_pos, marker="o", lw=2, label="Модель")
-        ax.plot([0, 1], [0, 1], linestyle="--", color="gray", label="Ідеальна калібровка")
-        ax.set_xlabel("Середня передбачена ймовірність")
-        ax.set_ylabel("Фактична частка позитивного класу")
-        ax.set_title("Крива калібрування")
+        ax.plot(mean_pred, frac_pos, marker="o", lw=2, label="Model")
+        ax.plot([0, 1], [0, 1], linestyle="--", color="gray", label="Perfect calibration")
+        ax.set_xlabel("Mean predicted probability")
+        ax.set_ylabel("Actual positive class fraction")
+        ax.set_title("Calibration Curve")
         ax.legend()
         fig.tight_layout()
         fig.savefig("plots/calibration_curve.png", dpi=150)
         plt.close(fig)
-        print("  Збережено: plots/calibration_curve.png")
+        print("  Saved: plots/calibration_curve.png")
 
     def _plot_probability_distribution(self, y_true, preds_proba):
         fig, ax = plt.subplots(figsize=(9, 5))
         sns.histplot(
             preds_proba[y_true == 0],
             color="crimson",
-            label="Збиткове",
+            label="Loss-making",
             stat="density",
             bins=30,
             alpha=0.45,
@@ -553,7 +553,7 @@ class ProfitabilityClassifier:
         sns.histplot(
             preds_proba[y_true == 1],
             color="seagreen",
-            label="Прибуткове",
+            label="Profitable",
             stat="density",
             bins=30,
             alpha=0.45,
@@ -564,20 +564,20 @@ class ProfitabilityClassifier:
             color="black",
             linestyle="--",
             lw=1.5,
-            label=f"Поріг={self.optimal_threshold:.2f}",
+            label=f"Threshold={self.optimal_threshold:.2f}",
         )
-        ax.set_xlabel("Передбачена ймовірність")
-        ax.set_ylabel("Щільність")
-        ax.set_title("Розподіл передбачених ймовірностей")
+        ax.set_xlabel("Predicted probability")
+        ax.set_ylabel("Density")
+        ax.set_title("Predicted Probability Distribution")
         ax.legend()
         fig.tight_layout()
         fig.savefig("plots/probability_distribution.png", dpi=150)
         plt.close(fig)
-        print("  Збережено: plots/probability_distribution.png")
+        print("  Saved: plots/probability_distribution.png")
 
     def _plot_shap(self, X_test: pd.DataFrame):
         try:
-            print("  Обчислення SHAP-значень...")
+            print("  Calculating SHAP values...")
             X_sample = X_test.head(500)
             explainer = shap.TreeExplainer(self.best_model)
             shap_values = explainer.shap_values(X_sample)
@@ -587,16 +587,16 @@ class ProfitabilityClassifier:
             plt.tight_layout()
             plt.savefig("plots/shap_summary.png", dpi=150, bbox_inches="tight")
             plt.close()
-            print("  Збережено: plots/shap_summary.png")
+            print("  Saved: plots/shap_summary.png")
 
             plt.figure(figsize=(10, 7))
             shap.summary_plot(shap_values, X_sample, plot_type="bar", show=False, max_display=15)
             plt.tight_layout()
             plt.savefig("plots/shap_bar.png", dpi=150, bbox_inches="tight")
             plt.close()
-            print("  Збережено: plots/shap_bar.png")
+            print("  Saved: plots/shap_bar.png")
         except Exception as exc:
-            print(f"  SHAP не вдалося виконати: {exc}")
+            print(f"  Failed to calculate SHAP values: {exc}")
 
     def _save_metrics_report(
         self,
@@ -609,45 +609,45 @@ class ProfitabilityClassifier:
         report_path = "plots/metrics_report.txt"
         lines = [
             "=" * 58,
-            "Звіт про метрики класифікатора прибутковості",
+            "Profitability Classifier Metrics Report",
             "=" * 58,
             "",
-            f"Точність (Accuracy)                        : {metrics_summary['accuracy']:.4f}",
-            f"Збалансована точність (Balanced Accuracy) : {metrics_summary['balanced_accuracy']:.4f}",
-            f"Площа під ROC-кривою (ROC AUC)            : {metrics_summary['roc_auc']:.4f}",
-            f"Середня точність (Average Precision)      : {metrics_summary['avg_precision']:.4f}",
-            f"Коефіцієнт Меттьюза (MCC)                 : {metrics_summary['mcc']:.4f}",
-            f"Коефіцієнт Каппа Коена (Cohen's Kappa)    : {metrics_summary['cohen_kappa']:.4f}",
-            f"Показник Браєра (Brier Score)             : {metrics_summary['brier_score']:.4f}",
-            f"Макро-F1 (Macro F1)                       : {metrics_summary['macro_f1']:.4f}",
-            f"Оптимальний поріг                         : {self.optimal_threshold:.2f}",
+            f"Accuracy          : {metrics_summary['accuracy']:.4f}",
+            f"Balanced Accuracy : {metrics_summary['balanced_accuracy']:.4f}",
+            f"ROC AUC           : {metrics_summary['roc_auc']:.4f}",
+            f"Average Precision : {metrics_summary['avg_precision']:.4f}",
+            f"MCC               : {metrics_summary['mcc']:.4f}",
+            f"Cohen's Kappa     : {metrics_summary['cohen_kappa']:.4f}",
+            f"Brier Score       : {metrics_summary['brier_score']:.4f}",
+            f"Macro F1          : {metrics_summary['macro_f1']:.4f}",
+            f"Optimal Threshold : {self.optimal_threshold:.2f}",
             "",
-            "Наївний базовий рівень за часткою класу (тестова вибірка):",
-            f"  Частка прибуткових (Prevalence)               : {baseline_metrics['prevalence']:.4f}",
-            f"  Точність (Accuracy)                           : {baseline_metrics['accuracy']:.4f}",
-            f"  Збалансована точність (Balanced Accuracy)     : {baseline_metrics['balanced_accuracy']:.4f}",
-            f"  Площа під ROC-кривою (ROC AUC)                : {baseline_metrics['roc_auc']:.4f}",
-            f"  Середня точність (Average Precision)          : {baseline_metrics['avg_precision']:.4f}",
-            f"  Коефіцієнт Меттьюза (MCC)                     : {baseline_metrics['mcc']:.4f}",
-            f"  Коефіцієнт Каппа Коена (Cohen's Kappa)        : {baseline_metrics['cohen_kappa']:.4f}",
-            f"  Показник Браєра (Brier Score)                 : {baseline_metrics['brier_score']:.4f}",
-            f"  Макро-F1 (Macro F1)                           : {baseline_metrics['macro_f1']:.4f}",
+            "Naive prevalence baseline (test set):",
+            f"  Prevalence        : {baseline_metrics['prevalence']:.4f}",
+            f"  Accuracy          : {baseline_metrics['accuracy']:.4f}",
+            f"  Balanced Accuracy : {baseline_metrics['balanced_accuracy']:.4f}",
+            f"  ROC AUC           : {baseline_metrics['roc_auc']:.4f}",
+            f"  Average Precision : {baseline_metrics['avg_precision']:.4f}",
+            f"  MCC               : {baseline_metrics['mcc']:.4f}",
+            f"  Cohen's Kappa     : {baseline_metrics['cohen_kappa']:.4f}",
+            f"  Brier Score       : {baseline_metrics['brier_score']:.4f}",
+            f"  Macro F1          : {baseline_metrics['macro_f1']:.4f}",
             "",
-            "Крос-валідація (5 фолдів на development-вибірці):",
-            f"  Площа під ROC-кривою (ROC AUC) : {cv_results['auc']['mean']:.4f} +/- {cv_results['auc']['std']:.4f}",
-            f"  Точність (Accuracy)            : {cv_results['acc']['mean']:.4f} +/- {cv_results['acc']['std']:.4f}",
-            f"  Макро-F1                       : {cv_results['f1']['mean']:.4f} +/- {cv_results['f1']['std']:.4f}",
+            "Cross-validation (5 folds on the development set):",
+            f"  ROC AUC  : {cv_results['auc']['mean']:.4f} +/- {cv_results['auc']['std']:.4f}",
+            f"  Accuracy : {cv_results['acc']['mean']:.4f} +/- {cv_results['acc']['std']:.4f}",
+            f"  Macro F1 : {cv_results['f1']['mean']:.4f} +/- {cv_results['f1']['std']:.4f}",
             "",
-            "Класифікаційний звіт:",
+            "Classification report:",
             classification_report(
                 y_true,
                 final_preds,
-                target_names=["Збиткове (0)", "Прибуткове (1)"],
+                target_names=["Loss-making (0)", "Profitable (1)"],
             ),
         ]
         with open(report_path, "w", encoding="utf-8") as file:
             file.write("\n".join(lines))
-        print(f"  Збережено: {report_path}")
+        print(f"  Saved: {report_path}")
 
 
 if __name__ == "__main__":
@@ -656,4 +656,4 @@ if __name__ == "__main__":
     if os.path.exists(ENRICHED_OUTPUT_PATH):
         ProfitabilityClassifier().train_evaluate(pd.read_csv(ENRICHED_OUTPUT_PATH, low_memory=False))
     else:
-        print(f"Файл не знайдено: {ENRICHED_OUTPUT_PATH}\nСпочатку запустіть пайплайн обробки даних")
+        print(f"File not found: {ENRICHED_OUTPUT_PATH}\nRun the data processing pipeline first.")

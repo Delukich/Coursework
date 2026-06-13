@@ -35,7 +35,7 @@ class EconomicsService:
         try:
             return float(REAL_FUEL_PRICES_2018[year][month - 1])
         except (KeyError, IndexError):
-            logger.warning(f"Немає ціни палива для {year}-{month:02d}, використовую 60.0")
+            logger.warning(f"No fuel price for {year}-{month:02d}; using 60.0")
             return 60.0
 
     def calculate_tariff(self, country_stats: dict, category: str, order_total: float) -> float:
@@ -52,7 +52,7 @@ class EconomicsService:
 
         tariff = order_total * base_rate * lpi_adj
         logger.debug(
-            f"Тариф: zone={dest_zone}, cat={category}, "
+            f"Tariff: zone={dest_zone}, cat={category}, "
             f"rate={base_rate:.2%}, lpi_adj={lpi_adj:.3f}, total={tariff:.2f}"
         )
         return tariff

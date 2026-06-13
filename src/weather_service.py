@@ -16,10 +16,10 @@ def load_weather_cache() -> dict:
         try:
             with open(WEATHER_CACHE_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                logger.info(f"Завантажено {len(data)} записів погоди з кешу")
+                logger.info(f"Loaded {len(data)} weather records from cache")
                 return data
         except (json.JSONDecodeError, IOError) as e:
-            logger.error(f"Пошкоджений кеш погоди ({e}), починаємо з нуля")
+            logger.error(f"Weather cache is corrupted ({e}); starting from scratch")
             try:
                 os.rename(WEATHER_CACHE_FILE, WEATHER_CACHE_FILE + ".bak")
             except OSError:
@@ -34,7 +34,7 @@ def save_weather_cache(cache: dict):
             json.dump(cache, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, WEATHER_CACHE_FILE)
     except Exception as e:
-        logger.error(f"Помилка збереження кешу погоди: {e}")
+        logger.error(f"Failed to save weather cache: {e}")
 
 
 weather_cache = load_weather_cache()
@@ -128,9 +128,9 @@ class WeatherService:
                 'rain': float(rain) if not np.isnan(rain) else self.FALLBACK['rain'],
             }
         except requests.exceptions.Timeout:
-            logger.error(f"Таймаут запиту погоди для ({lat:.2f}, {lon:.2f})")
+            logger.error(f"Weather request timed out for ({lat:.2f}, {lon:.2f})")
         except requests.exceptions.RequestException as e:
-            logger.error(f"Помилка запиту погоди: {e}")
+            logger.error(f"Weather request error: {e}")
         except Exception as e:
-            logger.error(f"Несподівана помилка погоди: {e}")
+            logger.error(f"Unexpected weather error: {e}")
         return self._estimate_climate(lat, date_obj)

@@ -110,24 +110,24 @@ class DataPipeline:
         self.limit = limit
         self.weather_svc = WeatherService()
         self.econ_svc = EconomicsService()
-        logger.info(f"Пайплайн | mode={mode} | year={self.year} | output={self.output_path}")
+        logger.info(f"Pipeline | mode={mode} | year={self.year} | output={self.output_path}")
 
     def _load_source_data(self) -> pd.DataFrame:
         if not os.path.exists(self.file_path):
-            raise FileNotFoundError(f"Вхідний файл не знайдено: {self.file_path}")
+            raise FileNotFoundError(f"Input file not found: {self.file_path}")
 
         df = pd.read_csv(self.file_path, encoding='latin1', low_memory=False)
-        print(f"Завантажено {len(df):,} рядків, {len(df.columns)} колонок")
+        print(f"Loaded {len(df):,} rows and {len(df.columns)} columns")
 
         if self.limit:
             df = df.head(self.limit)
-            print(f"Обмежено до {self.limit} рядків")
+            print(f"Limited to {self.limit} rows")
 
         return df
 
     def _save_enriched_data(self, df: pd.DataFrame):
         df.to_csv(self.output_path, index=False, encoding='utf-8')
-        print(f"Збережено: {self.output_path}")
+        print(f"Saved: {self.output_path}")
 
     def _add_time_features(self, df: pd.DataFrame) -> pd.DataFrame:
         df['order_date'] = pd.to_datetime(df['order date (DateOrders)'], errors='coerce')
@@ -144,7 +144,7 @@ class DataPipeline:
         return df
 
     def _add_geo_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        print("[2/6] Геокодування пунктів призначення...")
+        print("[2/6] Geocoding destinations...")
         unique_locs = df[['Order City', 'Order Country', 'Order Region', 'Market']].drop_duplicates()
         dest_coords = self._build_dest_coords(unique_locs)
         df = self._attach_dest_coords(df, dest_coords)
@@ -203,7 +203,7 @@ class DataPipeline:
         return distance if not np.isnan(distance) else DEFAULT_DISTANCE_KM
 
     def _add_weather_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        print("[3/6] Погодні дані...")
+        print("[3/6] Weather features...")
         results = [self._get_weather_for_row(r) for _, r in tqdm(df.iterrows(), total=len(df), desc="Weather")]
         df['Real_Temp_C'], df['Real_Rain_mm'] = zip(*results)
 
@@ -227,7 +227,7 @@ class DataPipeline:
         return weather['temp'], weather['rain']
 
     def _add_econ_features(self, df: pd.DataFrame) -> tuple:
-        print("[4/6] Макроекономічні дані...")
+        print("[4/6] Economic features...")
         unique_countries = df['Order Country'].unique()
         econ_map = {c: self.econ_svc.get_country_stats(c, self.year) for c in unique_countries}
 
@@ -263,7 +263,7 @@ class DataPipeline:
         return df
 
     def _compute_target(self, df: pd.DataFrame, econ_map: dict) -> pd.DataFrame:
-        print("[5/6] Розрахунок реалістичної прибутковості...")
+        print("[5/6] Calculating realistic profitability target...")
 
         fuel_mult = df['Real_Fuel_Price'] / 60.0
         ship_mult = df['Shipping Mode'].map(SHIPPING_MODE_COST).fillna(1.0)
@@ -293,7 +293,7 @@ class DataPipeline:
     def enrich_features(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
 
-        print("[1/6] Часові ознаки...")
+        print("[1/6] Time features...")
         df = self._normalize_reference_fields(df)
         df = self._add_time_features(df)
 
@@ -303,11 +303,11 @@ class DataPipeline:
         df = self._add_derived_features(df)
         df = self._compute_target(df, econ_map)
 
-        print("[6/6] Фільтрація та обробка пропусків...")
+        print("[6/6] Filtering columns and handling missing values...")
         available_cols = [c for c in FEATURES_TO_KEEP if c in df.columns]
         missing_feats = [c for c in FEATURES_TO_KEEP if c not in df.columns]
         if missing_feats:
-            logger.warning(f"Відсутні ознаки: {missing_feats}")
+            logger.warning(f"Missing features: {missing_feats}")
 
         df_clean = df[available_cols].copy()
 
@@ -317,9 +317,9 @@ class DataPipeline:
         df_clean[cat_cols] = df_clean[cat_cols].fillna('Unknown')
 
         pos_rate = df_clean['Is_Profitable'].mean() * 100
-        print(f"\nДатасет готовий: {len(df_clean):,} рядків | "
-              f"{len(df_clean.columns)} ознак (+ таргет) | "
-              f"Прибуткових: {pos_rate:.1f}% | Збиткових: {100 - pos_rate:.1f}%")
+        print(f"\nDataset ready: {len(df_clean):,} rows | "
+              f"{len(df_clean.columns)} features (+ target) | "
+              f"Profitable: {pos_rate:.1f}% | Loss-making: {100 - pos_rate:.1f}%")
 
         return df_clean
 

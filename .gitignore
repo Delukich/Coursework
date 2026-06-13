@@ -1,6 +1,7 @@
 .venv/
 .vs/
 .idea/
+.mplconfig/
 .models/
 
 cache/
